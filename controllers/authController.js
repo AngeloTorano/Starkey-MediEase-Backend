@@ -1,6 +1,5 @@
 const bcrypt = require("bcryptjs")
 const jwt = require("jsonwebtoken")
-const { nanoid } = require('nanoid');
 const db = require("../config/database")
 const ResponseHandler = require("../utils/responseHandler")
 

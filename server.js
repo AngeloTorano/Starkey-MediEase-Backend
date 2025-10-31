@@ -20,6 +20,8 @@ const phase3Routes = require("./routes/phase3");
 const auditRoutes = require("./routes/audit");
 const dashboardRoutes = require("./routes/dashboard");
 const reportsRoutes = require("./routes/reportsRoutes");
+const scheduleRoutes = require("./routes/schedule");
+const smsRoutes = require("./routes/smsRoutes");
 
 const app = express();
 
@@ -43,6 +45,7 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
 }));
+
 
 // Handle preflight OPTIONS requests globally
 app.options("*", cors());
@@ -69,17 +72,6 @@ app.get("/", (req, res) => {
   res.json({
     message: "Welcome to the SHF Backend API",
     version: "1.0.0",
-    documentation: process.env.DOCS_URL || "No documentation URL set",
-    endpoints: {
-      auth: "/api/auth",
-      users: "/api/users",
-      patients: "/api/patients",
-      supplies: "/api/supplies",
-      phases: "/api/phases",
-      locations: "/api/locations",
-      audit: "/api/audit",
-      dashboard: "/api/dashboard",
-    },
     healthCheck: "/health",
   });
 });
@@ -107,6 +99,8 @@ app.use("/api/phase3", phase3Routes);
 app.use("/api/audit", auditRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/reports", reportsRoutes);
+app.use("/api/schedules", scheduleRoutes);
+app.use("/api/sms", smsRoutes);
 
 // 404 handler
 app.use("*", (req, res) => {
