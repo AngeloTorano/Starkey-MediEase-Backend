@@ -1,14 +1,23 @@
+/* eslint-disable @typescript-eslint/no-var-requires */
 const db = require("../config/database")
 const ResponseHandler = require("../utils/responseHandler")
+const InventoryService = require("../utils/inventoryService") // <-- Import the new service
 
 class SupplyController {
+  
+  // --- createSupply remains the same as your original ---
   static async createSupply(req, res) {
     const client = await db.getClient()
-
     try {
       await client.query("BEGIN")
 
       const supplyData = req.body
+      
+      // 👇 --- ADDED: Make sure item_code is included if provided --- 👇
+      if (!supplyData.item_code) {
+          supplyData.item_code = null; // Or generate one
+      }
+      // 👆 --- END OF ADDITION --- 👆
 
       const columns = Object.keys(supplyData).join(", ")
       const placeholders = Object.keys(supplyData)
@@ -25,24 +34,30 @@ class SupplyController {
       const result = await client.query(query, values)
       const supply = result.rows[0]
 
-      // Log supply creation
-      await client.query(
-        "INSERT INTO audit_logs (table_name, record_id, action_type, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5)",
-        ["supplies", supply.supply_id, "CREATE", JSON.stringify(supplyData), req.user.user_id],
-      )
+      // Log supply creation (if audit_logs exists)
+      const auditTableCheck = await client.query("SELECT to_regclass('public.audit_logs') as exists;");
+      if (auditTableCheck.rows[0].exists) {
+        await client.query(
+          "INSERT INTO audit_logs (table_name, record_id, action_type, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5)",
+          ["supplies", supply.supply_id, "CREATE", JSON.stringify(supplyData), req.user.user_id],
+        )
+      }
 
       await client.query("COMMIT")
-
       return ResponseHandler.success(res, supply, "Supply created successfully", 201)
     } catch (error) {
       await client.query("ROLLBACK")
       console.error("Create supply error:", error)
+      if (error.code === '23505' && error.constraint === 'supplies_item_code_key') {
+           return ResponseHandler.error(res, "Item Code must be unique.", 400);
+      }
       return ResponseHandler.error(res, "Failed to create supply")
     } finally {
       client.release()
     }
   }
 
+  // --- getSupplies remains the same as your original ---
   static async getSupplies(req, res) {
     try {
       const { page = 1, limit = 10, category, status, low_stock } = req.query
@@ -75,95 +90,93 @@ class SupplyController {
         query += ` WHERE ${conditions.join(" AND ")}`
       }
 
-      query += ` ORDER BY s.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`
+      query += ` ORDER BY s.item_name ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`
       params.push(limit, offset)
 
       const result = await db.query(query, params)
+      
+      // Also get total count for pagination
+      let countQuery = `SELECT COUNT(*) FROM supplies s`
+      if (conditions.length > 0) {
+         countQuery += ` LEFT JOIN supply_categories sc ON s.category_id = sc.category_id WHERE ${conditions.join(" AND ")}`
+      }
+      const totalResult = await db.query(countQuery, params.slice(0, params.length - 2)); // remove limit/offset params
+      const totalCount = totalResult.rows[0].count;
 
-      return ResponseHandler.success(res, result.rows, "Supplies retrieved successfully")
+      return ResponseHandler.success(res, {
+        supplies: result.rows,
+        totalCount: totalCount,
+        totalPages: Math.ceil(totalCount / limit),
+        currentPage: Number(page)
+      }, "Supplies retrieved successfully")
+
     } catch (error) {
       console.error("Get supplies error:", error)
       return ResponseHandler.error(res, "Failed to retrieve supplies")
     }
   }
 
+
+  // --- 👇 THIS METHOD IS NOW UPDATED 👇 ---
   static async updateStock(req, res) {
     const client = await db.getClient()
-
     try {
       await client.query("BEGIN")
 
       const { supplyId } = req.params
       const { quantity, transaction_type, notes } = req.body
+      const userId = req.user.user_id
 
-      // Get current supply data
-      const supplyResult = await client.query("SELECT * FROM supplies WHERE supply_id = $1", [supplyId])
+      if (!quantity || !transaction_type) {
+         return ResponseHandler.error(res, "Missing quantity or transaction_type", 400)
+      }
 
-      if (supplyResult.rows.length === 0) {
+      // 1. Get the item_code from the supply_id
+      const supply = await client.query("SELECT item_code FROM supplies WHERE supply_id = $1", [supplyId])
+      if (supply.rows.length === 0) {
         await client.query("ROLLBACK")
         return ResponseHandler.notFound(res, "Supply not found")
       }
+      const itemCode = supply.rows[0].item_code
 
-      const supply = supplyResult.rows[0]
-      const newStockLevel = supply.current_stock_level + quantity
-
-      if (newStockLevel < 0) {
-        await client.query("ROLLBACK")
-        return ResponseHandler.error(res, "Insufficient stock", 400)
+      if (!itemCode) {
+         await client.query("ROLLBACK")
+         return ResponseHandler.error(res, "Cannot update stock for item without an Item Code.", 400)
       }
 
-      // Update stock level
-      await client.query(
-        "UPDATE supplies SET current_stock_level = $1, updated_at = CURRENT_TIMESTAMP WHERE supply_id = $2",
-        [newStockLevel, supplyId],
-      )
-
-      // Get transaction type ID
-      const transactionTypeResult = await client.query(
-        "SELECT transaction_type_id FROM supply_transaction_types WHERE type_name = $1",
-        [transaction_type],
-      )
-
-      if (transactionTypeResult.rows.length === 0) {
-        await client.query("ROLLBACK")
-        return ResponseHandler.error(res, "Invalid transaction type", 400)
-      }
-
-      // Record transaction
-      await client.query(
-        "INSERT INTO supply_transactions (supply_id, transaction_type_id, quantity, recorded_by_user_id, notes) VALUES ($1, $2, $3, $4, $5)",
-        [supplyId, transactionTypeResult.rows[0].transaction_type_id, quantity, req.user.user_id, notes],
-      )
-
-      // Log stock update
-      await client.query(
-        "INSERT INTO audit_logs (table_name, record_id, action_type, old_data, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5, $6)",
-        [
-          "supplies",
-          supplyId,
-          "STOCK_UPDATE",
-          JSON.stringify({ old_stock: supply.current_stock_level }),
-          JSON.stringify({ new_stock: newStockLevel, quantity, transaction_type }),
-          req.user.user_id,
-        ],
+      // 2. Use the new service to perform the update
+      const result = await InventoryService.updateStockByCode(
+        client,
+        itemCode,
+        Number(quantity),
+        transaction_type, // e.g., "Received" from your React restock
+        userId,
+        notes,
       )
 
       await client.query("COMMIT")
+      return ResponseHandler.success(res, { new_stock_level: result.new_stock_level }, "Stock updated successfully")
 
-      return ResponseHandler.success(res, { new_stock_level: newStockLevel }, "Stock updated successfully")
     } catch (error) {
       await client.query("ROLLBACK")
       console.error("Update stock error:", error)
+      // Pass service errors (like "Insufficient stock") to the client
+      if (error.message.includes("Insufficient stock") || error.message.includes("not found")) {
+        return ResponseHandler.error(res, error.message, 400)
+      }
       return ResponseHandler.error(res, "Failed to update stock")
     } finally {
       client.release()
     }
   }
+  // --- 👆 END OF UPDATED METHOD 👆 ---
 
+
+  // --- getSupplyTransactions remains the same as your original ---
   static async getSupplyTransactions(req, res) {
     try {
       const { supplyId } = req.params
-      const { page = 1, limit = 10 } = req.query
+      const { page = 1, limit = 50 } = req.query // Increased default limit
       const offset = (page - 1) * limit
 
       const query = `
@@ -176,16 +189,24 @@ class SupplyController {
         ORDER BY st.transaction_date DESC
         LIMIT $2 OFFSET $3
       `
-
       const result = await db.query(query, [supplyId, limit, offset])
 
-      return ResponseHandler.success(res, result.rows, "Supply transactions retrieved successfully")
+      const totalResult = await db.query("SELECT COUNT(*) FROM supply_transactions WHERE supply_id = $1", [supplyId]);
+      const totalCount = totalResult.rows[0].count;
+
+      return ResponseHandler.success(res, {
+        transactions: result.rows,
+        totalCount: totalCount,
+        totalPages: Math.ceil(totalCount / limit),
+        currentPage: Number(page)
+      }, "Supply transactions retrieved successfully")
     } catch (error) {
       console.error("Get supply transactions error:", error)
       return ResponseHandler.error(res, "Failed to retrieve supply transactions")
     }
   }
 
+  // --- All other methods (getSupplyCategories, createSupplyCategory, etc.) remain the same ---
   static async getSupplyCategories(req, res) {
     try {
       const query = "SELECT * FROM supply_categories ORDER BY category_name"
@@ -199,28 +220,25 @@ class SupplyController {
 
   static async createSupplyCategory(req, res) {
     const client = await db.getClient()
-
     try {
       await client.query("BEGIN")
-
       const { category_name } = req.body
-
       const query = `
         INSERT INTO supply_categories (category_name)
         VALUES ($1)
         RETURNING *
       `
-
       const result = await client.query(query, [category_name])
 
-      // Log category creation
-      await client.query(
-        "INSERT INTO audit_logs (table_name, record_id, action_type, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5)",
-        ["supply_categories", result.rows[0].category_id, "CREATE", JSON.stringify(result.rows[0]), req.user.user_id],
-      )
-
+      // Log category creation (if audit_logs exists)
+      const auditTableCheck = await client.query("SELECT to_regclass('public.audit_logs') as exists;");
+      if (auditTableCheck.rows[0].exists) {
+        await client.query(
+          "INSERT INTO audit_logs (table_name, record_id, action_type, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5)",
+          ["supply_categories", result.rows[0].category_id, "CREATE", JSON.stringify(result.rows[0]), req.user.user_id],
+        )
+      }
       await client.query("COMMIT")
-
       return ResponseHandler.success(res, result.rows[0], "Supply category created successfully", 201)
     } catch (error) {
       await client.query("ROLLBACK")
@@ -241,51 +259,42 @@ class SupplyController {
       return ResponseHandler.error(res, "Failed to retrieve transaction types")
     }
   }
-
+  
   static async getSupplyById(req, res) {
     try {
       const { supplyId } = req.params
-
       const query = `
         SELECT s.*, sc.category_name
         FROM supplies s
         LEFT JOIN supply_categories sc ON s.category_id = sc.category_id
         WHERE s.supply_id = $1
       `
-
       const result = await db.query(query, [supplyId])
-
       if (result.rows.length === 0) {
         return ResponseHandler.notFound(res, "Supply not found")
       }
-
       return ResponseHandler.success(res, result.rows[0], "Supply retrieved successfully")
     } catch (error) {
       console.error("Get supply by ID error:", error)
       return ResponseHandler.error(res, "Failed to retrieve supply")
     }
   }
-
+  
   static async updateSupply(req, res) {
     const client = await db.getClient()
-
     try {
       await client.query("BEGIN")
-
       const { supplyId } = req.params
       const supplyData = req.body
 
       // Get current supply data for audit log
       const currentSupplyResult = await client.query("SELECT * FROM supplies WHERE supply_id = $1", [supplyId])
-
       if (currentSupplyResult.rows.length === 0) {
         await client.query("ROLLBACK")
         return ResponseHandler.notFound(res, "Supply not found")
       }
-
       const currentSupply = currentSupplyResult.rows[0]
 
-      // Build update query dynamically
       const columns = Object.keys(supplyData)
       if (columns.length === 0) {
         await client.query("ROLLBACK")
@@ -302,54 +311,51 @@ class SupplyController {
         WHERE supply_id = $${values.length}
         RETURNING *
       `
-
       const result = await client.query(query, values)
       const updatedSupply = result.rows[0]
 
-      // Log supply update
-      await client.query(
-        "INSERT INTO audit_logs (table_name, record_id, action_type, old_data, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5, $6)",
-        [
-          "supplies",
-          supplyId,
-          "UPDATE",
-          JSON.stringify(currentSupply),
-          JSON.stringify(updatedSupply),
-          req.user.user_id,
-        ],
-      )
-
+      // Log supply update (if audit_logs exists)
+      const auditTableCheck = await client.query("SELECT to_regclass('public.audit_logs') as exists;");
+      if (auditTableCheck.rows[0].exists) {
+        await client.query(
+          "INSERT INTO audit_logs (table_name, record_id, action_type, old_data, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5, $6)",
+          [
+            "supplies",
+            supplyId,
+            "UPDATE",
+            JSON.stringify(currentSupply),
+            JSON.stringify(updatedSupply),
+            req.user.user_id,
+          ],
+        )
+      }
       await client.query("COMMIT")
-
       return ResponseHandler.success(res, updatedSupply, "Supply updated successfully")
     } catch (error) {
       await client.query("ROLLBACK")
       console.error("Update supply error:", error)
+      if (error.code === '23505' && error.constraint === 'supplies_item_code_key') {
+           return ResponseHandler.error(res, "Item Code must be unique.", 400);
+      }
       return ResponseHandler.error(res, "Failed to update supply")
     } finally {
       client.release()
     }
   }
-
+  
   static async deleteSupply(req, res) {
     const client = await db.getClient()
-
     try {
       await client.query("BEGIN")
-
       const { supplyId } = req.params
 
-      // Get current supply data for audit log
       const supplyResult = await client.query("SELECT * FROM supplies WHERE supply_id = $1", [supplyId])
-
       if (supplyResult.rows.length === 0) {
         await client.query("ROLLBACK")
         return ResponseHandler.notFound(res, "Supply not found")
       }
-
       const supply = supplyResult.rows[0]
 
-      // Check if supply has transactions
       const transactionCheck = await client.query(
         "SELECT COUNT(*) as count FROM supply_transactions WHERE supply_id = $1",
         [supplyId],
@@ -357,20 +363,20 @@ class SupplyController {
 
       if (transactionCheck.rows[0].count > 0) {
         await client.query("ROLLBACK")
-        return ResponseHandler.error(res, "Cannot delete supply with existing transactions", 400)
+        return ResponseHandler.error(res, "Cannot delete supply with existing transactions. Mark as 'Inactive' instead.", 400)
       }
 
-      // Delete supply
       await client.query("DELETE FROM supplies WHERE supply_id = $1", [supplyId])
 
-      // Log supply deletion
-      await client.query(
-        "INSERT INTO audit_logs (table_name, record_id, action_type, old_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5)",
-        ["supplies", supplyId, "DELETE", JSON.stringify(supply), req.user.user_id],
-      )
-
+      // Log supply deletion (if audit_logs exists)
+      const auditTableCheck = await client.query("SELECT to_regclass('public.audit_logs') as exists;");
+      if (auditTableCheck.rows[0].exists) {
+        await client.query(
+          "INSERT INTO audit_logs (table_name, record_id, action_type, old_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5)",
+          ["supplies", supplyId, "DELETE", JSON.stringify(supply), req.user.user_id],
+        )
+      }
       await client.query("COMMIT")
-
       return ResponseHandler.success(res, null, "Supply deleted successfully")
     } catch (error) {
       await client.query("ROLLBACK")

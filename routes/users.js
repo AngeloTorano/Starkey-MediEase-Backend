@@ -15,6 +15,10 @@ router.get("/roles", requireRole(["Admin"]), UserController.getRoles)
 router.get("/:userId", requireRole(["Admin"]), UserController.getUserById)
 router.put("/:userId", requireRole(["Admin"]), UserController.updateUser)
 router.put("/:userId/roles", requireRole(["Admin"]), UserController.updateUserRoles)
-router.delete("/:userId/deactive", requireRole(["Admin"]), UserController.deactivateUser)
+
+// --- ⭐️ START: UPDATED LINE ⭐️ ---
+// Changed from: router.patch("/:userId/deactivate", ...)
+router.patch("/:userId/toggle-active", requireRole(["Admin"]), UserController.toggleUserActiveState)
+// --- ⭐️ END: UPDATED LINE ⭐️ ---
 
 module.exports = router

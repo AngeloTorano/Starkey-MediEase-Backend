@@ -10,7 +10,16 @@ class UserController {
     try {
       await client.query("BEGIN")
 
-      const { username, password, first_name, last_name, email, roles } = req.body
+      const {
+        username,
+        password,
+        first_name,
+        last_name,
+        email,
+        roles,
+        city_assigned,
+        phone_number,
+      } = req.body
 
       // Check if username or email already exists
       const existingUser = await client.query("SELECT user_id FROM users WHERE username = $1 OR email = $2", [
@@ -29,9 +38,9 @@ class UserController {
 
       // Create user
       const userResult = await client.query(
-        `INSERT INTO users (username, password_hash, first_name, last_name, email)
-         VALUES ($1, $2, $3, $4, $5) RETURNING user_id`,
-        [username, password_hash, first_name, last_name, email],
+        `INSERT INTO users (username, password_hash, first_name, last_name, email, city_assigned, phone_number)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING user_id`,
+        [username, password_hash, first_name, last_name, email || null, city_assigned || null, phone_number],
       )
 
       const userId = userResult.rows[0].user_id
@@ -48,10 +57,15 @@ class UserController {
         }
       }
 
+      // --- ⭐️ START: FIX ⭐️ ---
+      // Safely get the user ID for logging
+      const changed_by_user_id = req.user?.user_id || null
+      // --- ⭐️ END: FIX ⭐️ ---
+
       // Log user creation
       await client.query(
         "INSERT INTO audit_logs (table_name, record_id, action_type, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5)",
-        ["users", userId, "CREATE", JSON.stringify({ username, roles }), req.user.user_id],
+        ["users", userId, "CREATE", JSON.stringify({ username, roles }), changed_by_user_id],
       )
 
       await client.query("COMMIT")
@@ -137,10 +151,15 @@ class UserController {
         }
       }
 
+      // --- ⭐️ START: FIX ⭐️ ---
+      // Safely get the user ID for logging
+      const changed_by_user_id = req.user?.user_id || null
+      // --- ⭐️ END: FIX ⭐️ ---
+
       // Log role update
       await client.query(
         "INSERT INTO audit_logs (table_name, record_id, action_type, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5)",
-        ["user_roles", userId, "UPDATE", JSON.stringify({ roles }), req.user.user_id],
+        ["user_roles", userId, "UPDATE", JSON.stringify({ roles }), changed_by_user_id],
       )
 
       await client.query("COMMIT")
@@ -224,6 +243,11 @@ class UserController {
 
       const result = await client.query(updateQuery, values)
 
+      // --- ⭐️ START: FIX ⭐️ ---
+      // Safely get the user ID for logging
+      const changed_by_user_id = req.user?.user_id || null
+      // --- ⭐️ END: FIX ⭐️ ---
+
       // Log user update
       await client.query(
         "INSERT INTO audit_logs (table_name, record_id, action_type, old_data, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5, $6)",
@@ -233,7 +257,7 @@ class UserController {
           "UPDATE",
           JSON.stringify(currentData),
           JSON.stringify(result.rows[0]),
-          req.user.user_id,
+          changed_by_user_id,
         ],
       )
 
@@ -252,7 +276,9 @@ class UserController {
     }
   }
 
-  static async deactivateUser(req, res) {
+  // --- ⭐️ START: UPDATED FUNCTION ⭐️ ---
+  // Replaced `deactivateUser` with `toggleUserActiveState`
+  static async toggleUserActiveState(req, res) {
     const client = await db.getClient()
 
     try {
@@ -260,7 +286,7 @@ class UserController {
 
       const { userId } = req.params
 
-      // Get current user data for audit
+      // Get current user data
       const currentResult = await client.query("SELECT * FROM users WHERE user_id = $1", [userId])
 
       if (currentResult.rows.length === 0) {
@@ -269,37 +295,46 @@ class UserController {
       }
 
       const currentData = currentResult.rows[0]
+      const newActiveState = !currentData.is_active // Flip the current state
+      const actionType = newActiveState ? "REACTIVATE" : "DEACTIVATE"
+      const actionMessage = newActiveState ? "User reactivated successfully" : "User deactivated successfully"
 
-      // Deactivate user
+      // Update user's active state
       const result = await client.query(
-        "UPDATE users SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1 RETURNING *",
-        [userId]
+        "UPDATE users SET is_active = $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2 RETURNING *",
+        [newActiveState, userId]
       )
 
-      // Log user deactivation
+      // --- ⭐️ START: FIX ⭐️ ---
+      // Safely get the user ID for logging
+      const changed_by_user_id = req.user?.user_id || null
+      // --- ⭐️ END: FIX ⭐️ ---
+
+      // Log the action
       await client.query(
         "INSERT INTO audit_logs (table_name, record_id, action_type, old_data, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5, $6)",
         [
           "users",
           userId,
-          "DEACTIVATE",
+          actionType, // Use dynamic action type
           JSON.stringify(currentData),
           JSON.stringify(result.rows[0]),
-          req.user.user_id,
+          changed_by_user_id,
         ],
       )
 
       await client.query("COMMIT")
 
-      return ResponseHandler.success(res, null, "User deactivated successfully")
+      return ResponseHandler.success(res, null, actionMessage)
     } catch (error) {
       await client.query("ROLLBACK")
-      console.error("Deactivate user error:", error)
-      return ResponseHandler.error(res, "Failed to deactivate user")
+      console.error("Toggle user active state error:", error)
+      return ResponseHandler.error(res, "Failed to update user active state")
     } finally {
       client.release()
     }
   }
+  // --- ⭐️ END: UPDATED FUNCTION ⭐️ ---
 
   static async getRoles(req, res) {
     try {

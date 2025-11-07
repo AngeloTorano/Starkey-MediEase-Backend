@@ -57,6 +57,8 @@ class AuthController {
         last_name: user.last_name,
         email: user.email,
         roles: user.roles.filter((role) => role !== null),
+        phone_number: user.phone_number, // ADD THIS
+        // city_assigned: user.city_assigned, // optional
       },
     };
 

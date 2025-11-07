@@ -8,9 +8,9 @@ const router = express.Router()
 router.use(authenticateToken)
 
 // 🔹 Admin-only routes
-router.post("/", requireRole(["Admin"]), ScheduleController.createSchedule)
-router.put("/:scheduleId", requireRole(["Admin"]), ScheduleController.updateSchedule)
-router.delete("/:scheduleId", requireRole(["Admin"]), ScheduleController.deleteSchedule)
+router.post("/", requireRole(["Admin", "Country Coordinator"]), ScheduleController.createSchedule)
+router.put("/:scheduleId", requireRole(["Admin", "Country Coordinator"]), ScheduleController.updateSchedule)
+router.delete("/:scheduleId", requireRole(["Admin", "Country Coordinator"]), ScheduleController.deleteSchedule)
 
 // 🔹 Public/Shared routes
 router.get("/", ScheduleController.getSchedules)

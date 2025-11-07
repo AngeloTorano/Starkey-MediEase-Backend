@@ -464,6 +464,370 @@ static async getPatientById(req, res) {
       return ResponseHandler.error(res, "Failed to retrieve patients by phase")
     }
   }
+
+  static async getPatientFullReport(req, res) {
+    try {
+      const patientId = Number(req.params.patientId)
+      if (!patientId || isNaN(patientId)) {
+        return ResponseHandler.error(res, "Invalid patient ID", 400)
+      }
+
+      // Base patient (demographics + latest phase info if present)
+      const basePatientRes = await db.query(
+        `
+        SELECT DISTINCT ON (p.patient_id)
+          p.*,
+          pp.phase_id, pp.status as phase_status, ph.phase_name,
+          pp.phase_start_date, pp.phase_end_date
+        FROM patients p
+        LEFT JOIN patient_phases pp ON p.patient_id = pp.patient_id
+        LEFT JOIN phases ph ON pp.phase_id = ph.phase_id
+        WHERE p.patient_id = $1
+        ORDER BY p.patient_id, pp.phase_start_date DESC NULLS LAST, pp.phase_id DESC NULLS LAST, p.created_at DESC
+        `,
+        [patientId],
+      )
+
+      if (basePatientRes.rows.length === 0) {
+        return ResponseHandler.notFound(res, "Patient not found")
+      }
+
+      const patient = basePatientRes.rows[0]
+
+      // Phase 1 snapshot (latest of each related record)
+      const phase1Res = await db.query(
+        `
+        SELECT
+          p.patient_id, p.shf_id, p.first_name, p.last_name, p.gender, p.date_of_birth,
+          pp.phase_id, pp.status, pp.phase_start_date, pp.phase_end_date,
+          -- Registration
+          p1.registration_date        AS p1_registration_date,
+          p1.city                     AS p1_city,
+          p1.has_hearing_loss         AS p1_has_hearing_loss,
+          p1.uses_sign_language       AS p1_uses_sign_language,
+          p1.uses_speech              AS p1_uses_speech,
+          p1.hearing_loss_causes      AS p1_hearing_loss_causes,
+          p1.ringing_sensation        AS p1_ringing_sensation,
+          p1.ear_pain                 AS p1_ear_pain,
+          p1.hearing_satisfaction_18_plus AS p1_hearing_satisfaction_18_plus,
+          p1.conversation_difficulty  AS p1_conversation_difficulty,
+          -- Ear screening
+          es1.ears_clear              AS p1_es_ears_clear,
+          es1.otc_wax                 AS p1_es_otc_wax,
+          es1.otc_infection           AS p1_es_otc_infection,
+          es1.otc_perforation         AS p1_es_otc_perforation,
+          es1.otc_tinnitus            AS p1_es_otc_tinnitus,
+          es1.otc_atresia             AS p1_es_otc_atresia,
+          es1.otc_implant             AS p1_es_otc_implant,
+          es1.otc_other               AS p1_es_otc_other,
+          es1.medical_recommendation  AS p1_es_medical_recommendation,
+          es1.medication_given        AS p1_es_medication_given,
+          es1.left_ear_clear_for_fitting AS p1_es_left_clear_for_fitting,
+          es1.right_ear_clear_for_fitting AS p1_es_right_clear_for_fitting,
+          es1.comments                AS p1_es_comments,
+          -- Hearing screening
+          hs1.screening_method        AS p1_hs_method,
+          hs1.left_ear_result         AS p1_hs_left_result,
+          hs1.right_ear_result        AS p1_hs_right_result,
+          hs1.hearing_satisfaction_18_plus_pass AS p1_hs_satisfaction_pass,
+          -- Ear impressions
+          ei.ear_impression           AS p1_ear_impression,
+          ei.comment                  AS p1_ear_impression_comment,
+          -- Final QC
+          q1.ear_impressions_inspected_collected AS p1_qc_impressions_collected,
+          q1.shf_id_number_id_card_given         AS p1_qc_id_card_given
+        FROM patients p
+        LEFT JOIN patient_phases pp 
+          ON p.patient_id = pp.patient_id AND pp.phase_id = 1
+        LEFT JOIN LATERAL (
+          SELECT r.*
+          FROM phase1_registration_section r
+          WHERE r.patient_id = p.patient_id AND r.phase_id = 1
+          ORDER BY r.updated_at DESC NULLS LAST, r.created_at DESC NULLS LAST
+          LIMIT 1
+        ) p1 ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT es.*
+          FROM ear_screening es
+          WHERE es.patient_id = p.patient_id AND es.phase_id = 1
+          ORDER BY es.updated_at DESC NULLS LAST, es.created_at DESC NULLS LAST
+          LIMIT 1
+        ) es1 ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT hs.*
+          FROM hearing_screening hs
+          WHERE hs.patient_id = p.patient_id AND hs.phase_id = 1
+          ORDER BY hs.updated_at DESC NULLS LAST, hs.created_at DESC NULLS LAST
+          LIMIT 1
+        ) hs1 ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT ei.*
+          FROM ear_impressions ei
+          WHERE ei.patient_id = p.patient_id AND ei.phase_id = 1
+          ORDER BY ei.updated_at DESC NULLS LAST, ei.created_at DESC NULLS LAST
+          LIMIT 1
+        ) ei ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT q.*
+          FROM final_qc_p1 q
+          WHERE q.patient_id = p.patient_id AND q.phase_id = 1
+          ORDER BY q.updated_at DESC NULLS LAST, q.created_at DESC NULLS LAST
+          LIMIT 1
+        ) q1 ON TRUE
+        WHERE p.patient_id = $1
+        LIMIT 1
+        `,
+        [patientId],
+      )
+
+      // Phase 2 snapshot (latest)
+      const phase2Res = await db.query(
+        `
+        SELECT
+          p.patient_id, p.shf_id, p.first_name, p.last_name, p.gender, p.date_of_birth,
+          pp.phase_id, pp.status, pp.phase_start_date, pp.phase_end_date,
+          -- Registration
+          p2.registration_date        AS p2_registration_date,
+          p2.city                     AS p2_city,
+          p2.patient_type             AS p2_patient_type,
+          -- Fitting table
+          ft.fitting_left_power_level   AS p2_ft_left_power_level,
+          ft.fitting_left_volume        AS p2_ft_left_volume,
+          ft.fitting_left_model         AS p2_ft_left_model,
+          ft.fitting_left_battery       AS p2_ft_left_battery,
+          ft.fitting_left_earmold       AS p2_ft_left_earmold,
+          ft.fitting_right_power_level  AS p2_ft_right_power_level,
+          ft.fitting_right_volume       AS p2_ft_right_volume,
+          ft.fitting_right_model        AS p2_ft_right_model,
+          ft.fitting_right_battery      AS p2_ft_right_battery,
+          ft.fitting_right_earmold      AS p2_ft_right_earmold,
+          -- Fitting
+          f2.number_of_hearing_aid      AS p2_f_number_of_hearing_aid,
+          f2.special_device             AS p2_f_special_device,
+          f2.normal_hearing             AS p2_f_normal_hearing,
+          f2.distortion                 AS p2_f_distortion,
+          f2.implant                    AS p2_f_implant,
+          f2.recruitment                AS p2_f_recruitment,
+          f2.no_response                AS p2_f_no_response,
+          f2.other                      AS p2_f_other,
+          f2.comment                    AS p2_f_comment,
+          f2.clear_for_counseling       AS p2_f_clear_for_counseling,
+          -- Counseling
+          c2.received_aftercare_information AS p2_c_received_aftercare_info,
+          c2.trained_as_student_ambassador  AS p2_c_trained_student_amb,
+          -- Final QC
+          q2.batteries_provided_13      AS p2_qc_batt_13,
+          q2.batteries_provided_675     AS p2_qc_batt_675,
+          q2.hearing_aid_satisfaction_18_plus AS p2_qc_satisfaction_18_plus,
+          q2.confirmation               AS p2_qc_confirmation,
+          q2.qc_comments                AS p2_qc_comments,
+          -- Ear screening (phase 2 otoscopy)
+          es2.ears_clear                AS p2_es_ears_clear,
+          es2.otc_wax                   AS p2_es_otc_wax,
+          es2.otc_infection             AS p2_es_otc_infection,
+          es2.otc_perforation           AS p2_es_otc_perforation,
+          es2.otc_tinnitus              AS p2_es_otc_tinnitus,
+          es2.otc_atresia               AS p2_es_otc_atresia,
+          es2.otc_implant               AS p2_es_otc_implant,
+          es2.otc_other                 AS p2_es_otc_other,
+          es2.medical_recommendation    AS p2_es_medical_recommendation,
+          es2.medication_given          AS p2_es_medication_given,
+          -- Hearing screening
+          hs2.screening_method          AS p2_hs_method,
+          hs2.left_ear_result           AS p2_hs_left_result,
+          hs2.right_ear_result          AS p2_hs_right_result,
+          hs2.hearing_satisfaction_18_plus_pass AS p2_hs_satisfaction_pass
+        FROM patients p
+        LEFT JOIN patient_phases pp 
+          ON p.patient_id = pp.patient_id AND pp.phase_id = 2
+        LEFT JOIN LATERAL (
+          SELECT r.*
+          FROM phase2_registration_section r
+          WHERE r.patient_id = p.patient_id AND r.phase_id = 2
+          ORDER BY r.updated_at DESC NULLS LAST, r.created_at DESC NULLS LAST
+          LIMIT 1
+        ) p2 ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT ft0.*
+          FROM fitting_table ft0
+          WHERE ft0.patient_id = p.patient_id AND ft0.phase_id = 2
+          ORDER BY ft0.updated_at DESC NULLS LAST, ft0.created_at DESC NULLS LAST
+          LIMIT 1
+        ) ft ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT f.*
+          FROM fitting f
+          WHERE f.patient_id = p.patient_id AND f.phase_id = 2
+          ORDER BY f.updated_at DESC NULLS LAST, f.created_at DESC NULLS LAST
+          LIMIT 1
+        ) f2 ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT c.*
+          FROM counseling c
+          WHERE c.patient_id = p.patient_id AND c.phase_id = 2
+          ORDER BY c.updated_at DESC NULLS LAST, c.created_at DESC NULLS LAST
+          LIMIT 1
+        ) c2 ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT q.*
+          FROM final_qc_p2 q
+          WHERE q.patient_id = p.patient_id AND q.phase_id = 2
+          ORDER BY q.updated_at DESC NULLS LAST, q.created_at DESC NULLS LAST
+          LIMIT 1
+        ) q2 ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT es.*
+          FROM ear_screening es
+          WHERE es.patient_id = p.patient_id AND es.phase_id = 2
+          ORDER BY es.updated_at DESC NULLS LAST, es.created_at DESC NULLS LAST
+          LIMIT 1
+        ) es2 ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT hs.*
+          FROM hearing_screening hs
+          WHERE hs.patient_id = p.patient_id AND hs.phase_id = 2
+          ORDER BY hs.updated_at DESC NULLS LAST, hs.created_at DESC NULLS LAST
+          LIMIT 1
+        ) hs2 ON TRUE
+        WHERE p.patient_id = $1
+        LIMIT 1
+        `,
+        [patientId],
+      )
+
+      // Phase 3: ALL aftercare records (each with latest related reg/otoscopy/qc at the time)
+      const phase3ListRes = await db.query(
+        `
+        SELECT
+          p.patient_id, p.shf_id, p.first_name, p.last_name, p.gender, p.date_of_birth,
+          -- Aftercare assessment (base row)
+          a.assessment_id,
+          a.created_at AS p3_assessment_created_at,
+          a.eval_hearing_aid_dead_broken AS p3_eval_aid_dead_broken,
+          a.eval_hearing_aid_internal_feedback AS p3_eval_aid_internal_feedback,
+          a.eval_hearing_aid_power_change_needed AS p3_eval_aid_power_change_needed,
+          a.eval_hearing_aid_power_change_too_low AS p3_eval_aid_power_change_too_low,
+          a.eval_hearing_aid_power_change_too_loud AS p3_eval_aid_power_change_too_loud,
+          a.eval_hearing_aid_lost_stolen AS p3_eval_aid_lost_stolen,
+          a.eval_hearing_aid_no_problem AS p3_eval_aid_no_problem,
+          a.eval_earmold_discomfort_too_tight AS p3_eval_earmold_discomfort_too_tight,
+          a.eval_earmold_feedback_too_loose AS p3_eval_earmold_feedback_too_loose,
+          a.eval_earmold_damaged_tubing_cracked AS p3_eval_earmold_damaged_tubing_cracked,
+          a.eval_earmold_lost_stolen AS p3_eval_earmold_lost_stolen,
+          a.eval_earmold_no_problem AS p3_eval_earmold_no_problem,
+          a.service_tested_wfa_demo_hearing_aids AS p3_service_tested_wfa_demo_hearing_aids,
+          a.service_hearing_aid_sent_for_repair_replacement AS p3_service_sent_for_repair,
+          a.service_not_benefiting_from_hearing_aid AS p3_service_not_benefiting,
+          a.service_refit_new_hearing_aid AS p3_service_refit_new_aid,
+          a.service_retubed_unplugged_earmold AS p3_service_retubed_unplugged_earmold,
+          a.service_modified_earmold AS p3_service_modified_earmold,
+          a.service_fit_stock_earmold AS p3_service_fit_stock_earmold,
+          a.service_took_new_ear_impression AS p3_service_took_new_ear_impression,
+          a.service_refit_custom_earmold AS p3_service_refit_custom_earmold,
+          a.gs_counseling AS p3_gs_counseling,
+          a.gs_batteries_provided AS p3_gs_batteries_provided,
+          a.gs_batteries_13_qty AS p3_gs_batteries_13_qty,
+          a.gs_batteries_675_qty AS p3_gs_batteries_675_qty,
+          a.gs_refer_aftercare_service_center AS p3_gs_refer_aftercare_center,
+          a.gs_refer_next_phase2_mission AS p3_gs_refer_next_phase2_mission,
+          a.comment AS p3_aftercare_comment,
+
+          -- Registration closest/latest
+          r.registration_date AS p3_registration_date,
+          r.country           AS p3_country,
+          r.city              AS p3_city,
+          r.type_of_aftercare AS p3_type_of_aftercare,
+          r.service_center_school_name AS p3_service_center_school_name,
+          r.return_visit_custom_earmold_repair AS p3_return_visit_custom_earmold_repair,
+          r.problem_with_hearing_aid_earmold AS p3_problem_with_hearing_aid_earmold,
+
+          -- Final QC
+          q.hearing_aid_satisfaction_18_plus AS p3_qc_satisfaction_18_plus,
+          q.ask_people_to_repeat_themselves AS p3_qc_ask_repeat,
+          q.notes_from_shf AS p3_qc_notes,
+
+          -- Ear screening (otoscopy)
+          es.ears_clear AS p3_es_ears_clear,
+          es.otc_wax AS p3_es_otc_wax,
+          es.otc_infection AS p3_es_otc_infection,
+          es.otc_perforation AS p3_es_otc_perforation,
+          es.otc_tinnitus AS p3_es_otc_tinnitus,
+          es.otc_atresia AS p3_es_otc_atresia,
+          es.otc_implant AS p3_es_otc_implant,
+          es.otc_other AS p3_es_otc_other,
+          es.medical_recommendation AS p3_es_medical_recommendation,
+          es.medication_given AS p3_es_medication_given,
+          es.left_ear_clear_for_fitting AS p3_es_left_clear_for_fitting,
+          es.right_ear_clear_for_fitting AS p3_es_right_clear_for_fitting,
+          es.comments AS p3_es_comments
+        FROM aftercare_assessment a
+        JOIN patients p ON p.patient_id = a.patient_id
+        LEFT JOIN LATERAL (
+          SELECT r0.*
+          FROM phase3_registration_section r0
+          WHERE r0.patient_id = a.patient_id AND r0.phase_id = 3
+          ORDER BY r0.created_at DESC NULLS LAST
+          LIMIT 1
+        ) r ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT q0.*
+          FROM final_qc_p3 q0
+          WHERE q0.patient_id = a.patient_id AND q0.phase_id = 3
+          ORDER BY q0.created_at DESC NULLS LAST
+          LIMIT 1
+        ) q ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT es0.*
+          FROM ear_screening es0
+          WHERE es0.patient_id = a.patient_id AND es0.phase_id = 3
+          ORDER BY es0.created_at DESC NULLS LAST
+          LIMIT 1
+        ) es ON TRUE
+        WHERE a.patient_id = $1
+        ORDER BY a.created_at DESC NULLS LAST, a.assessment_id DESC
+        `,
+        [patientId],
+      )
+
+      // Optional: also return raw arrays for Phase 3 components
+      const [phase3RegsRes, phase3ESRes, phase3QCRes] = await Promise.all([
+        db.query(
+          `SELECT * FROM phase3_registration_section WHERE patient_id = $1 AND phase_id = 3 ORDER BY created_at DESC NULLS LAST, updated_at DESC NULLS LAST`,
+          [patientId],
+        ),
+        db.query(
+          `SELECT * FROM ear_screening WHERE patient_id = $1 AND phase_id = 3 ORDER BY created_at DESC NULLS LAST, updated_at DESC NULLS LAST`,
+          [patientId],
+        ),
+        db.query(
+          `SELECT * FROM final_qc_p3 WHERE patient_id = $1 AND phase_id = 3 ORDER BY created_at DESC NULLS LAST, updated_at DESC NULLS LAST`,
+          [patientId],
+        ),
+      ])
+
+      const data = {
+        patient,
+        phase1: phase1Res.rows[0] || null,
+        phase2: phase2Res.rows[0] || null,
+
+        // NEW: all Phase 3 entries
+        phase3_list: phase3ListRes.rows || [],
+
+        // Keep latest for backward compatibility
+        phase3: phase3ListRes.rows[0] || null,
+
+        // Optional raw lists if the UI needs them
+        phase3_registrations: phase3RegsRes.rows || [],
+        phase3_ear_screenings: phase3ESRes.rows || [],
+        phase3_qc: phase3QCRes.rows || [],
+      }
+
+      return ResponseHandler.success(res, data, "Patient full report retrieved")
+    } catch (error) {
+      console.error("Get patient full report error:", error)
+      return ResponseHandler.error(res, "Failed to retrieve patient full report")
+    }
+  }
 }
 
 module.exports = PatientController

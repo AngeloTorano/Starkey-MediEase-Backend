@@ -39,12 +39,14 @@ const schemas = {
   }),
 
   createUser: Joi.object({
-    username: Joi.string().alphanum().min(3).max(30).required(),
-    password: Joi.string().min(8).required(),
-    first_name: Joi.string().max(100).required(),
-    last_name: Joi.string().max(100).required(),
-    email: Joi.string().email().required(),
+    username: Joi.string().min(3).required(),
+    password: Joi.string().min(6).required(),
+    first_name: Joi.string().required(),
+    last_name: Joi.string().required(),
+    email: Joi.string().allow("", null).email(),
     roles: Joi.array().items(Joi.string()).min(1).required(),
+    city_assigned: Joi.string().allow(null, ""),
+    phone_number: Joi.string().pattern(/^\+?\d{10,15}$/).required(), // ADDED
   }),
 
   createPatient: Joi.object({

@@ -86,11 +86,20 @@ router.get(
   DashboardController.getEnhancedSummary
 );
 
-// Patient geographic (map-friendly)
+// --- UPDATED & NEW ROUTES ---
+
+// Patient geographic (map-friendly, alias)
 router.get(
   "/patient-geographic",
   requireRole(allowedRoles),
   DashboardController.getGeographicAnalytics
+);
+
+// NEW: Patient city distribution (for the map page)
+router.get(
+  "/patient-city-distribution",
+  requireRole(allowedRoles),
+  DashboardController.getPatientCityDistribution
 );
 
 module.exports = router;

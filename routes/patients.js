@@ -30,6 +30,14 @@ router.get(
   PatientController.getPatientsByPhase,
 )
 
+// NEW: full cross-phase report for a patient (keep before the generic :patientId route)
+router.get(
+  "/:patientId/full",
+  requireRole(["Admin", "City Coordinator", "Country Coordinator"]),
+  PatientController.getPatientFullReport,
+)
+
+// Existing specific-id route
 router.get(
   "/:patientId",
   requireRole(["Admin", "City Coordinator", "Country Coordinator"]),

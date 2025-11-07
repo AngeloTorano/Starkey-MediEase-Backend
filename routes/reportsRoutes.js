@@ -1,20 +1,15 @@
 const express = require("express")
-const { authenticateToken, requireRole } = require("../middleware/auth")
-const ReportsController = require("../controllers/reportsController")
+const { authenticateToken } = require("../middleware/auth")
+const ReportingController = require("../controllers/reportsController")
 
 const router = express.Router()
 
-// All report routes require authentication
 router.use(authenticateToken)
 
-// Existing routes (unchanged)
-router.get("/summary", requireRole(["Admin", "City Coordinator", "Country Coordinator"]), ReportsController.getSummary)
-router.get("/demographics", requireRole(["Admin", "City Coordinator", "Country Coordinator"]), ReportsController.getDemographics)
-router.get("/medical", requireRole(["Admin", "City Coordinator", "Country Coordinator"]), ReportsController.getMedical)
-router.get("/performance", requireRole(["Admin", "City Coordinator", "Country Coordinator"]), ReportsController.getPerformance)
-router.get("/patient-geographic",requireRole(["Admin", "City Coordinator", "Country Coordinator"]), ReportsController.getPatientGeographic);
-
-// Optional: Add new comprehensive dashboard endpoint
-// router.get("/comprehensive", requireRole(["Admin", "City Coordinator", "Country Coordinator"]), ReportsController.getComprehensiveDashboard);
+// Export-only endpoints
+router.get("/export/phase1", ReportingController.exportPhase1)
+router.get("/export/phase2", ReportingController.exportPhase2)
+router.get("/export/phase3", ReportingController.exportPhase3)
+router.get("/export/all", ReportingController.exportAllPhases)
 
 module.exports = router

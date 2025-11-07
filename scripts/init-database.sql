@@ -362,6 +362,20 @@ CREATE TABLE final_qc_p3 (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+
+-- schedules Table: Stores mission or schedule information
+CREATE TABLE schedules (
+    schedule_id SERIAL PRIMARY KEY,
+    mission_name VARCHAR(50),
+    description TEXT,
+    AfterCareCity VARCHAR(100),
+    date DATE NOT NULL,
+    time TIME,
+    status VARCHAR(50),
+    created_by_user_id INT REFERENCES users(user_id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
 -- =============================================================================
 -- 4. Supply Management Tables
 -- =============================================================================
@@ -417,6 +431,27 @@ CREATE TABLE supply_transactions (
     notes TEXT
 );
 
+
+-- sms_messages Table: Stores all sent SMS (notifications or OTP)
+CREATE TABLE sms_messages (
+    sms_id SERIAL PRIMARY KEY,
+    message_type VARCHAR(50),
+    message_content TEXT NOT NULL,
+    recipient_count INT DEFAULT 0,
+    recipients TEXT, -- Optional: store list of phone numbers sent
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+
+-- otp_codes Table: Stores OTP codes for 2FA login verification
+CREATE TABLE otp_codes (
+    otp_id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES users(user_id) ON DELETE CASCADE,
+    otp_code VARCHAR(10) NOT NULL,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    is_verified BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
 -- =============================================================================
 -- 5. Audit Logging Table
 -- =============================================================================
@@ -477,38 +512,7 @@ CREATE INDEX idx_final_qc_p3_patient_id ON final_qc_p3(patient_id);
 
 
 
--- schedules Table: Stores mission or schedule information
-CREATE TABLE schedules (
-    schedule_id SERIAL PRIMARY KEY,
-    mission_name VARCHAR(50),
-    description TEXT,
-    AfterCareCity VARCHAR(100),
-    date DATE NOT NULL,
-    time TIME,
-    status VARCHAR(50),
-    created_by_user_id INT REFERENCES users(user_id) ON DELETE SET NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
 
 
--- sms_messages Table: Stores all sent SMS (notifications or OTP)
-CREATE TABLE sms_messages (
-    sms_id SERIAL PRIMARY KEY,
-    message_type VARCHAR(50),
-    message_content TEXT NOT NULL,
-    recipient_count INT DEFAULT 0,
-    recipients TEXT, -- Optional: store list of phone numbers sent
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
 
 
--- otp_codes Table: Stores OTP codes for 2FA login verification
-CREATE TABLE otp_codes (
-    otp_id SERIAL PRIMARY KEY,
-    user_id INT REFERENCES users(user_id) ON DELETE CASCADE,
-    otp_code VARCHAR(10) NOT NULL,
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    is_verified BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
