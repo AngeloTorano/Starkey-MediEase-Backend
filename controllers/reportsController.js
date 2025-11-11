@@ -505,6 +505,7 @@ class ReportingController {
       const { city, gender, status, dateStart, dateEnd } = req.query
       const base = `
         SELECT
+          p1.phase1_reg_id,
           p.patient_id,
           p.shf_id,
           p.first_name,
@@ -522,7 +523,7 @@ class ReportingController {
           p1.uses_speech,
           p1.hearing_loss_causes,
           p1.ringing_sensation,
-          p1.ear_pain,
+            p1.ear_pain,
           p1.hearing_satisfaction_18_plus,
           p1.conversation_difficulty,
           es.ears_clear AS p1_es_ears_clear,
@@ -546,13 +547,13 @@ class ReportingController {
           ei.comment AS p1_ear_impression_comment,
           q1.ear_impressions_inspected_collected AS p1_qc_impressions_collected,
           q1.shf_id_number_id_card_given AS p1_qc_id_card_given
-        FROM patients p
-        LEFT JOIN patient_phases pp ON p.patient_id = pp.patient_id AND pp.phase_id = 1
-        LEFT JOIN phase1_registration_section p1 ON p.patient_id = p1.patient_id
-        LEFT JOIN ear_screening es ON es.patient_id = p.patient_id AND es.phase_id = 1
-        LEFT JOIN hearing_screening hs ON hs.patient_id = p.patient_id AND hs.phase_id = 1
-        LEFT JOIN ear_impressions ei ON ei.patient_id = p.patient_id AND ei.phase_id = 1
-        LEFT JOIN final_qc_p1 q1 ON q1.patient_id = p.patient_id AND q1.phase_id = 1
+        FROM phase1_registration_section p1
+        JOIN patients p ON p.patient_id = p1.patient_id
+        LEFT JOIN patient_phases pp ON pp.patient_id = p.patient_id AND pp.phase_id = 1
+        LEFT JOIN ear_screening es ON es.phase1_reg_id = p1.phase1_reg_id
+        LEFT JOIN hearing_screening hs ON hs.phase1_reg_id = p1.phase1_reg_id
+        LEFT JOIN ear_impressions ei ON ei.phase1_reg_id = p1.phase1_reg_id
+        LEFT JOIN final_qc_p1 q1 ON q1.phase1_reg_id = p1.phase1_reg_id
       `
       const { whereClauses, params } = ReportingController.buildCommonFilters(
         { city, gender, status, dateStart, dateEnd },
@@ -560,7 +561,7 @@ class ReportingController {
         'COALESCE(p1.registration_date, pp.phase_start_date)',
         { city: 'p1.city', gender: 'p.gender', status: 'pp.status' }
       )
-      const final = base + (whereClauses.length ? ` WHERE ${whereClauses.join(' AND ')}` : '') + ' ORDER BY p.last_name'
+      const final = base + (whereClauses.length ? ` WHERE ${whereClauses.join(' AND ')}` : '') + ' ORDER BY p1.phase1_reg_id'
       const { rows } = await db.query(final, params)
       return ResponseHandler.success(res, rows, 'Phase 1 export generated')
     } catch (e) {
@@ -574,6 +575,7 @@ class ReportingController {
       const { city, gender, status, dateStart, dateEnd } = req.query
       const base = `
         SELECT
+          p2.phase2_reg_id,
           p.patient_id,
           p.shf_id,
           p.first_name,
@@ -619,19 +621,19 @@ class ReportingController {
           es2.otc_infection AS p2_es_otc_infection,
           es2.otc_perforation AS p2_es_otc_perforation,
           es2.otc_tinnitus AS p2_es_otc_tinnitus,
-          es2.otc_atresia AS p2_es_otc_atresia,
+          es2.otc_atresia AS p2_es_otresia,
           es2.otc_implant AS p2_es_otc_implant,
           es2.otc_other AS p2_es_otc_other,
           es2.medical_recommendation AS p2_es_medical_recommendation,
           es2.medication_given AS p2_es_medication_given
-        FROM patients p
-        LEFT JOIN patient_phases pp ON p.patient_id = pp.patient_id AND pp.phase_id = 2
-        LEFT JOIN phase2_registration_section p2 ON p.patient_id = p2.patient_id
-        LEFT JOIN fitting_table ft ON ft.patient_id = p.patient_id AND ft.phase_id = 2
-        LEFT JOIN fitting f2 ON f2.patient_id = p.patient_id AND f2.phase_id = 2
-        LEFT JOIN counseling c2 ON c2.patient_id = p.patient_id AND c2.phase_id = 2
-        LEFT JOIN final_qc_p2 q2 ON q2.patient_id = p.patient_id AND q2.phase_id = 2
-        LEFT JOIN ear_screening es2 ON es2.patient_id = p.patient_id AND es2.phase_id = 2
+        FROM phase2_registration_section p2
+        JOIN patients p ON p.patient_id = p2.patient_id
+        LEFT JOIN patient_phases pp ON pp.patient_id = p.patient_id AND pp.phase_id = 2
+        LEFT JOIN fitting_table ft ON ft.phase2_reg_id = p2.phase2_reg_id
+        LEFT JOIN fitting f2 ON f2.phase2_reg_id = p2.phase2_reg_id
+        LEFT JOIN counseling c2 ON c2.phase2_reg_id = p2.phase2_reg_id
+        LEFT JOIN final_qc_p2 q2 ON q2.phase2_reg_id = p2.phase2_reg_id
+        LEFT JOIN ear_screening es2 ON es2.phase2_reg_id = p2.phase2_reg_id
       `
       const { whereClauses, params } = ReportingController.buildCommonFilters(
         { city, gender, status, dateStart, dateEnd },
@@ -639,7 +641,7 @@ class ReportingController {
         'COALESCE(p2.registration_date, pp.phase_start_date)',
         { city: 'p2.city', gender: 'p.gender', status: 'pp.status' }
       )
-      const final = base + (whereClauses.length ? ` WHERE ${whereClauses.join(' AND ')}` : '') + ' ORDER BY p.last_name'
+      const final = base + (whereClauses.length ? ` WHERE ${whereClauses.join(' AND ')}` : '') + ' ORDER BY p2.phase2_reg_id'
       const { rows } = await db.query(final, params)
       return ResponseHandler.success(res, rows, 'Phase 2 export generated')
     } catch (e) {
@@ -653,7 +655,7 @@ class ReportingController {
       const { city, gender, status, dateStart, dateEnd } = req.query
       const base = `
         SELECT
-          a3.assessment_id,
+          p3.phase3_reg_id,
           p.patient_id,
           p.shf_id,
           p.first_name,
@@ -699,6 +701,7 @@ class ReportingController {
           a3.gs_refer_aftercare_service_center AS p3_gs_refer_aftercare_center,
           a3.gs_refer_next_phase2_mission AS p3_gs_refer_next_phase2_mission,
           a3.comment AS p3_aftercare_comment,
+          a3.created_at AS p3_assessment_created_at,
           q3.hearing_aid_satisfaction_18_plus AS p3_qc_satisfaction_18_plus,
           q3.ask_people_to_repeat_themselves AS p3_qc_ask_repeat,
           q3.notes_from_shf AS p3_qc_notes,
@@ -714,22 +717,21 @@ class ReportingController {
           es3.medication_given AS p3_es_medication_given,
           es3.left_ear_clear_for_fitting AS p3_es_left_clear_for_fitting,
           es3.right_ear_clear_for_fitting AS p3_es_right_clear_for_fitting,
-          es3.comments AS p3_es_comments,
-          a3.created_at AS p3_assessment_created_at
-        FROM aftercare_assessment a3
-        JOIN patients p ON p.patient_id = a3.patient_id
-        LEFT JOIN patient_phases pp ON p.patient_id = pp.patient_id AND pp.phase_id = 3
-        LEFT JOIN phase3_registration_section p3 ON p.patient_id = p3.patient_id
-        LEFT JOIN final_qc_p3 q3 ON q3.patient_id = p.patient_id AND q3.phase_id = 3
-        LEFT JOIN ear_screening es3 ON es3.patient_id = p.patient_id AND es3.phase_id = 3
+          es3.comments AS p3_es_comments
+        FROM phase3_registration_section p3
+        JOIN patients p ON p.patient_id = p3.patient_id
+        LEFT JOIN patient_phases pp ON pp.patient_id = p.patient_id AND pp.phase_id = 3
+        LEFT JOIN aftercare_assessment a3 ON a3.phase3_reg_id = p3.phase3_reg_id
+        LEFT JOIN final_qc_p3 q3 ON q3.phase3_reg_id = p3.phase3_reg_id
+        LEFT JOIN ear_screening es3 ON es3.phase3_reg_id = p3.phase3_reg_id
       `
       const { whereClauses, params } = ReportingController.buildCommonFilters(
         { city, gender, status, dateStart, dateEnd },
         1,
-        'COALESCE(a3.created_at, pp.phase_start_date)',
+        'COALESCE(a3.created_at, p3.registration_date, pp.phase_start_date)',
         { city: 'p3.city', gender: 'p.gender', status: 'pp.status' }
       )
-      const final = base + (whereClauses.length ? ` WHERE ${whereClauses.join(' AND ')}` : '') + ' ORDER BY a3.created_at DESC'
+      const final = base + (whereClauses.length ? ` WHERE ${whereClauses.join(' AND ')}` : '') + ' ORDER BY p3.phase3_reg_id'
       const { rows } = await db.query(final, params)
       return ResponseHandler.success(res, rows, 'Phase 3 export generated')
     } catch (e) {
@@ -744,6 +746,7 @@ class ReportingController {
       const phase1 = `
         SELECT
           1 AS phase_id,
+          p1.phase1_reg_id AS registration_id,
           p.patient_id,
           p.shf_id,
           p.first_name,
@@ -755,15 +758,15 @@ class ReportingController {
           pp.phase_end_date,
           p1.registration_date AS registration_date,
           p1.city AS city,
-          'single' AS phase3_visit_type,
           NULL::timestamp AS assessment_created_at
-        FROM patients p
-        LEFT JOIN patient_phases pp ON p.patient_id = pp.patient_id AND pp.phase_id = 1
-        LEFT JOIN phase1_registration_section p1 ON p.patient_id = p1.patient_id
+        FROM phase1_registration_section p1
+        JOIN patients p ON p.patient_id = p1.patient_id
+        LEFT JOIN patient_phases pp ON pp.patient_id = p.patient_id AND pp.phase_id = 1
       `
       const phase2 = `
         SELECT
           2 AS phase_id,
+          p2.phase2_reg_id AS registration_id,
           p.patient_id,
           p.shf_id,
           p.first_name,
@@ -775,15 +778,15 @@ class ReportingController {
           pp.phase_end_date,
           p2.registration_date AS registration_date,
           p2.city AS city,
-          'single' AS phase3_visit_type,
           NULL::timestamp AS assessment_created_at
-        FROM patients p
-        LEFT JOIN patient_phases pp ON p.patient_id = pp.patient_id AND pp.phase_id = 2
-        LEFT JOIN phase2_registration_section p2 ON p.patient_id = p2.patient_id
+        FROM phase2_registration_section p2
+        JOIN patients p ON p.patient_id = p2.patient_id
+        LEFT JOIN patient_phases pp ON pp.patient_id = p.patient_id AND pp.phase_id = 2
       `
       const phase3 = `
         SELECT
           3 AS phase_id,
+          p3.phase3_reg_id AS registration_id,
           p.patient_id,
           p.shf_id,
           p.first_name,
@@ -795,15 +798,14 @@ class ReportingController {
           pp.phase_end_date,
           p3.registration_date AS registration_date,
           p3.city AS city,
-          'aftercare' AS phase3_visit_type,
           a3.created_at AS assessment_created_at
-        FROM aftercare_assessment a3
-        JOIN patients p ON p.patient_id = a3.patient_id
-        LEFT JOIN patient_phases pp ON p.patient_id = pp.patient_id AND pp.phase_id = 3
-        LEFT JOIN phase3_registration_section p3 ON p.patient_id = p3.patient_id
+        FROM phase3_registration_section p3
+        JOIN patients p ON p.patient_id = p3.patient_id
+        LEFT JOIN patient_phases pp ON pp.patient_id = p.patient_id AND pp.phase_id = 3
+        LEFT JOIN aftercare_assessment a3 ON a3.phase3_reg_id = p3.phase3_reg_id
       `
       const unioned = `(${phase1}) UNION ALL (${phase2}) UNION ALL (${phase3})`
-      const wrapped = `SELECT * FROM (${unioned}) AS u`
+      const wrapped = `SELECT * FROM (${unioned}) u`
       const { whereClauses, params } = ReportingController.buildCommonFilters(
         { city, gender, status, dateStart, dateEnd },
         1,
@@ -814,10 +816,8 @@ class ReportingController {
         whereClauses.push(`phase_id = $${params.length + 1}`)
         params.push(Number(phaseId))
       }
-      const final =
-        wrapped +
-        (whereClauses.length ? ` WHERE ${whereClauses.join(' AND ')}` : '') +
-        ' ORDER BY phase_id, patient_id, assessment_created_at DESC NULLS LAST'
+      const final = wrapped + (whereClauses.length ? ` WHERE ${whereClauses.join(' AND ')}` : '') +
+        ' ORDER BY phase_id, registration_id'
       const { rows } = await db.query(final, params)
       return ResponseHandler.success(res, rows, 'All phases export generated')
     } catch (e) {

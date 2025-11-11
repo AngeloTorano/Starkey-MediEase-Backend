@@ -69,7 +69,7 @@ const schemas = {
   }),
 
   createSupply: Joi.object({
-    category_id: Joi.number().integer().required(),
+    category_id: Joi.number().integer().optional().allow(null),
     item_name: Joi.string().max(255).required(),
     description: Joi.string(),
     current_stock_level: Joi.number().integer().min(0).required(),
@@ -78,6 +78,27 @@ const schemas = {
     status: Joi.string().max(50),
   }),
 
+  uploadDocument: Joi.object({
+    title: Joi.string().max(255).required().messages({
+      "string.empty": "Title is required",
+      "string.max": "Title must not exceed 255 characters"
+    }),
+    description: Joi.string().max(500).required().messages({
+      "string.empty": "Description is required",
+      "string.max": "Description must not exceed 500 characters"
+    }),
+    version: Joi.alternatives()
+      .try(
+        Joi.number().integer().positive(),
+        Joi.string().pattern(/^\d+$/)
+      )
+      .required()
+      .messages({
+        "alternatives.match": "Version must be a positive whole number",
+        "any.required": "Version is required"
+      }),
+  }),
+  
   // Phase 1 schemas
   phase1Registration: Joi.object({
     patient_id: Joi.number().integer().required(),
@@ -94,14 +115,10 @@ const schemas = {
   }),
 
   earScreening: Joi.object({
-    patient_id: Joi.number().integer().required().messages({
-      "number.base": "Patient ID must be a number",
-      "any.required": "Patient ID is required",
-    }),
-
-    screening_name: Joi.string().max(50).optional(),
-    ears_clear: Joi.string().valid("Yes", "No").optional(),
-
+    patient_id: Joi.number().required(),
+    phase1_reg_id: Joi.number().optional().allow(null),
+    screening_name: Joi.string().optional(),
+    ears_clear_for_impressions: Joi.string().valid("Yes","No").required(),
     left_wax: Joi.boolean().optional(),
     right_wax: Joi.boolean().optional(),
     left_infection: Joi.boolean().optional(),
@@ -122,16 +139,16 @@ const schemas = {
     medication_antiseptic: Joi.boolean().optional(),
     medication_antifungal: Joi.boolean().optional(),
 
-    left_ear_clear_for_fitting: Joi.string().allow(null).optional(),
-    right_ear_clear_for_fitting: Joi.string().allow(null).optional(),
+    left_ear_clear_for_fitting: Joi.string().optional().allow(null, ""),
+    right_ear_clear_for_fitting: Joi.string().optional().allow(null, ""),
 
-    medical_recommendation: Joi.string().max(500).allow(null).optional(),
-    comments: Joi.string().max(1000).allow(null).optional(),
+    medical_recommendation: Joi.string().optional().allow(null, ""),
+    comments: Joi.string().optional().allow(null, ""),
   }),
 
   hearingScreening: Joi.object({
-    patient_id: Joi.number().integer().required(),
-    phase_id: Joi.number().integer(),
+    patient_id: Joi.number().required(),
+    phase1_reg_id: Joi.number().optional().allow(null),
     screening_method: Joi.string().max(100),
     left_ear_result: Joi.string().max(50),
     right_ear_result: Joi.string().max(50),
@@ -139,15 +156,17 @@ const schemas = {
   }),
 
   earImpression: Joi.object({
-    patient_id: Joi.number().integer().required(),
-    ear_impression: Joi.string().max(10),
-    comment: Joi.string(),
+    patient_id: Joi.number().required(),
+    phase1_reg_id: Joi.number().optional().allow(null),
+    ear_impression: Joi.string().valid("Left","Right").required(),
+    comment: Joi.string().optional().allow(null,""),
   }),
 
   finalQCP1: Joi.object({
-    patient_id: Joi.number().integer().required(),
-    ear_impressions_inspected_collected: Joi.boolean(),
-    shf_id_number_id_card_given: Joi.boolean(),
+    patient_id: Joi.number().required(),
+    phase1_reg_id: Joi.number().optional().allow(null),
+    ear_impressions_inspected_collected: Joi.boolean().required(),
+    shf_id_number_id_card_given: Joi.boolean().required(),
   }),
 
   // Phase 2 schemas (canonical names)
@@ -278,15 +297,148 @@ const schemas = {
     transaction_type: Joi.string().required(),
     notes: Joi.string(),
   }),
+
+  bulkSupplyUsage: Joi.object({
+    usages: Joi.array().items(Joi.object({
+      item_code: Joi.string().required(),
+      quantity: Joi.number().integer().positive().required(),
+      patient_id: Joi.number().optional(),
+      phase_id: Joi.number().valid(1,2,3).optional(),
+      related_event_type: Joi.string().optional(),
+      notes: Joi.string().optional()
+    })).min(1).required()
+  }),
+
+  // Add/change your exported schemas to include changePassword
+  changePassword: Joi.object({
+    old_password: Joi.string().min(1).required(),
+    new_password: Joi.string().min(6).required(),
+  }),
 }
 
 // Backwards / route compatibility aliases for phase2 routes
-schemas.phase2EarScreening = schemas.earScreening
-schemas.phase2HearingScreening = schemas.hearingScreening
-schemas.phase2FittingTable = schemas.fittingTable
-schemas.phase2Fitting = schemas.fitting
-schemas.phase2Counseling = schemas.counseling
-schemas.phase2FinalQC = schemas.finalQCP2
+schemas.phase2EarScreening = Joi.object({
+  patient_id: Joi.number().required(),
+  phase2_reg_id: Joi.number().optional(),
+  ears_clear_for_impressions: Joi.string().valid("Yes", "No").optional(),
+  ears_clear_for_fitting: Joi.string().valid("Yes", "No").optional(),
+  ears_clear: Joi.string().valid("Yes", "No").optional(),
+  left_wax: Joi.boolean().optional(),
+  right_wax: Joi.boolean().optional(),
+  left_infection: Joi.boolean().optional(),
+  right_infection: Joi.boolean().optional(),
+  left_perforation: Joi.boolean().optional(),
+  right_perforation: Joi.boolean().optional(),
+  left_tinnitus: Joi.boolean().optional(),
+  right_tinnitus: Joi.boolean().optional(),
+  left_atresia: Joi.boolean().optional(),
+  right_atresia: Joi.boolean().optional(),
+  left_implant: Joi.boolean().optional(),
+  right_implant: Joi.boolean().optional(),
+  left_other: Joi.boolean().optional(),
+  right_other: Joi.boolean().optional(),
+  medical_recommendation: Joi.string().allow(null, "").optional(),
+  medication_antibiotic: Joi.boolean().optional(),
+  medication_analgesic: Joi.boolean().optional(),
+  medication_antiseptic: Joi.boolean().optional(),
+  medication_antifungal: Joi.boolean().optional(),
+  comments: Joi.string().allow(null, "").optional(),
+}).or("ears_clear_for_impressions", "ears_clear_for_fitting", "ears_clear")
+
+schemas.phase3EarScreening = Joi.object({
+  patient_id: Joi.number().required(),
+  phase3_reg_id: Joi.number().optional(),
+  // Phase 3 aliases
+  ears_clear_for_assessment: Joi.string().valid("Yes", "No").optional(),
+  ears_clear_for_fitting: Joi.string().valid("Yes", "No").optional(),
+  ears_clear: Joi.string().valid("Yes", "No").optional(),
+  left_wax: Joi.boolean().optional(),
+  right_wax: Joi.boolean().optional(),
+  left_infection: Joi.boolean().optional(),
+  right_infection: Joi.boolean().optional(),
+  left_perforation: Joi.boolean().optional(),
+  right_perforation: Joi.boolean().optional(),
+  left_other: Joi.boolean().optional(),
+  right_other: Joi.boolean().optional(),
+  medical_recommendation: Joi.string().allow(null, "").optional(),
+  medication_antibiotic: Joi.boolean().optional(),
+  medication_analgesic: Joi.boolean().optional(),
+  medication_antiseptic: Joi.boolean().optional(),
+  medication_antifungal: Joi.boolean().optional(),
+  left_ear_clear_for_assessment: Joi.string().valid("Yes", "No").optional(),
+  right_ear_clear_for_assessment: Joi.string().valid("Yes", "No").optional(),
+  comments: Joi.string().allow(null, "").optional(),
+}).or("ears_clear_for_assessment", "ears_clear_for_fitting", "ears_clear")
+
+// ---- Phase 2 schema aliases / additions (to satisfy routes/phase2.js) ----
+schemas.phase2HearingScreening = Joi.object({
+  patient_id: Joi.number().integer().required(),
+  phase2_reg_id: Joi.number().integer().optional(),
+  screening_method: Joi.string().max(100).optional().allow(null, ""),
+  left_ear_result: Joi.string().max(50).optional().allow(null, ""),
+  right_ear_result: Joi.string().max(50).optional().allow(null, ""),
+  hearing_satisfaction_18_plus_pass: Joi.string().max(50).optional().allow(null, ""),
+})
+
+schemas.phase2FittingTable = Joi.object({
+  patient_id: Joi.number().integer().required(),
+  phase2_reg_id: Joi.number().integer().optional(),
+  fitting_left_power_level: Joi.string().max(100).optional().allow(null, ""),
+  fitting_left_volume: Joi.string().max(100).optional().allow(null, ""),
+  fitting_left_model: Joi.string().max(100).optional().allow(null, ""),
+  fitting_left_battery: Joi.string().max(50).optional().allow(null, ""),
+  fitting_left_earmold: Joi.string().max(100).optional().allow(null, ""),
+  fitting_right_power_level: Joi.string().max(100).optional().allow(null, ""),
+  fitting_right_volume: Joi.string().max(100).optional().allow(null, ""),
+  fitting_right_model: Joi.string().max(100).optional().allow(null, ""),
+  fitting_right_battery: Joi.string().max(50).optional().allow(null, ""),
+  fitting_right_earmold: Joi.string().max(100).optional().allow(null, ""),
+})
+
+schemas.phase2Fitting = Joi.object({
+  patient_id: Joi.number().integer().required(),
+  phase2_reg_id: Joi.number().integer().optional(),
+  number_of_hearing_aid: Joi.number().integer().min(0).optional(),
+  special_device: Joi.string().max(100).optional().allow(null, ""),
+  // integer enums 0/1/2/3 are set server-side from *_left/right booleans; allow raw ints for updates
+  normal_hearing: Joi.number().integer().min(0).max(3).optional(),
+  distortion: Joi.number().integer().min(0).max(3).optional(),
+  implant: Joi.number().integer().min(0).max(3).optional(),
+  recruitment: Joi.number().integer().min(0).max(3).optional(),
+  no_response: Joi.number().integer().min(0).max(3).optional(),
+  other: Joi.number().integer().min(0).max(3).optional(),
+  comment: Joi.string().allow(null, "").optional(),
+  clear_for_counseling: Joi.boolean().optional(),
+  // accept raw left/right boolean flags (will be ignored by DB insert if not mapped)
+  normal_hearing_left: Joi.boolean().optional(),
+  normal_hearing_right: Joi.boolean().optional(),
+  distortion_left: Joi.boolean().optional(),
+  distortion_right: Joi.boolean().optional(),
+  implant_left: Joi.boolean().optional(),
+  implant_right: Joi.boolean().optional(),
+  recruitment_left: Joi.boolean().optional(),
+  recruitment_right: Joi.boolean().optional(),
+  no_response_left: Joi.boolean().optional(),
+  no_response_right: Joi.boolean().optional(),
+  other_left: Joi.boolean().optional(),
+  other_right: Joi.boolean().optional(),
+})
+
+schemas.phase2Counseling = schemas.counseling || Joi.object({
+  patient_id: Joi.number().integer().required(),
+  received_aftercare_information: Joi.boolean().optional(),
+  trained_as_student_ambassador: Joi.boolean().optional(),
+})
+
+schemas.phase2FinalQC = schemas.finalQCP2 || Joi.object({
+  patient_id: Joi.number().integer().required(),
+  phase2_reg_id: Joi.number().integer().optional(),
+  batteries_provided_13: Joi.number().integer().min(0).optional(),
+  batteries_provided_675: Joi.number().integer().min(0).optional(),
+  hearing_aid_satisfaction_18_plus: Joi.string().max(50).optional().allow(null, ""),
+  confirmation: Joi.boolean().optional(),
+  qc_comments: Joi.string().optional().allow(null, ""),
+})
 
 module.exports = {
   validateRequest,

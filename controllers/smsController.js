@@ -43,7 +43,6 @@ const sendSMS = async (numbers, message) => {
         }
       );
 
-      console.log(`✅ SMS delivered to ${toNumber}`, response.data);
 
     } catch (error) {
       console.error("❌ SMS Error:", error.response?.data || error.message);

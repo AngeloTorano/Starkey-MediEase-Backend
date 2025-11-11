@@ -45,4 +45,17 @@ router.put("/:supplyId", requireRole(["Admin", "Supply Manager"]), SupplyControl
 
 router.delete("/:supplyId", requireRole(["Admin", "Supply Manager"]), SupplyController.deleteSupply)
 
+// Usage recording
+router.post(
+  "/usage",
+  requireRole(["Admin", "Supply Manager"]),
+  SupplyController.recordUsage,
+)
+
+router.post(
+  "/usage/bulk",
+  requireRole(["Admin", "Supply Manager"]),
+  SupplyController.recordBulkUsage,
+)
+
 module.exports = router

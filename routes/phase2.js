@@ -101,7 +101,11 @@ router.get(
 )
 
 // Get full Phase 2 data for a patient
-router.get("/patient/:patientId", requireRole(["Admin", "City Coordinator", "Country Coordinator"]), Phase2Controller.getPhase2Data)
+router.get(
+  "/patient/:patientId/registration/:regId",
+  requireRole(["Admin", "City Coordinator", "Country Coordinator"]),
+  Phase2Controller.getPhase2Data
+)
 
 // Update routes (example)
 router.put("/registration/:registrationId", requireRole(["Admin"]), Phase2Controller.updateRegistration)

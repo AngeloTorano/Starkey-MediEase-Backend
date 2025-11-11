@@ -2,8 +2,30 @@
 
 const db = require("../config/database")
 const ResponseHandler = require("../utils/responseHandler")
+const { resolvePhaseRegistrationId } = require("../utils/resolveRegistration");
+const InventoryService = require("../services/inventoryService");
 
-class Phase3Controller {
+  class Phase3Controller {
+
+      static async resolveLatestIncompleteRegId(client, patientId) {
+    const q = `
+      SELECT r.phase3_reg_id,
+             EXISTS(SELECT 1 FROM ear_screening_p3 e WHERE e.phase3_reg_id = r.phase3_reg_id) AS ear_screening_exists,
+             EXISTS(SELECT 1 FROM aftercare_assessment a WHERE a.phase3_reg_id = r.phase3_reg_id) AS aftercare_exists,
+             EXISTS(SELECT 1 FROM final_qc_p3 f WHERE f.phase3_reg_id = r.phase3_reg_id) AS finalqc_exists
+      FROM phase3_registration_section r
+      WHERE r.patient_id = $1
+      ORDER BY r.registration_date DESC NULLS LAST, r.created_at DESC NULLS LAST
+    `;
+    const r = await client.query(q, [patientId]);
+    for (const row of r.rows) {
+      if (!(row.ear_screening_exists && row.aftercare_exists && row.finalqc_exists)) {
+        return row.phase3_reg_id; // first (latest) incomplete
+      }
+    }
+    return null; // all complete or none exist
+  }
+  
   // Helper to map boolean Left/Right to 0/1/2/3 (None/Left/Right/Both)
   static mapEarConditionsToInteger(left, right) {
     const normalize = (v) => {
@@ -115,30 +137,31 @@ static async createRegistration(req, res) {
       screeningData.completed_by_user_id = req.user?.user_id
       screeningData.phase_id = 3
 
-      // medication array
+      // resolve reg id FIRST so it’s part of filtered payload
+      const phase3_reg_id = await resolvePhaseRegistrationId(
+        client, 3, screeningData.patient_id, screeningData.phase3_reg_id
+      )
+
       const medicationGiven = []
       if (screeningData.medication_antibiotic) medicationGiven.push("Antibiotic")
       if (screeningData.medication_analgesic) medicationGiven.push("Analgesic")
       if (screeningData.medication_antiseptic) medicationGiven.push("Antiseptic")
       if (screeningData.medication_antifungal) medicationGiven.push("Antifungal")
 
-      // ears_clear flag (string)
       const earsClear = screeningData.ears_clear_for_assessment
         ? String(screeningData.ears_clear_for_assessment).toLowerCase() === "yes"
-        : screeningData.ears_clear === "Yes"
+        : String(screeningData.ears_clear || "").toLowerCase() === "yes"
 
       const mappedData = {
         patient_id: Number(screeningData.patient_id),
         phase_id: 3,
+        phase3_reg_id: phase3_reg_id || null,
         completed_by_user_id: Number(screeningData.completed_by_user_id) || null,
         screening_name: screeningData.screening_name || "Aftercare",
         ears_clear: earsClear ? "Yes" : "No",
         otc_wax: earsClear ? null : Phase3Controller.mapEarConditionsToInteger(screeningData.left_wax, screeningData.right_wax),
         otc_infection: earsClear ? null : Phase3Controller.mapEarConditionsToInteger(screeningData.left_infection, screeningData.right_infection),
         otc_perforation: earsClear ? null : Phase3Controller.mapEarConditionsToInteger(screeningData.left_perforation, screeningData.right_perforation),
-        otc_tinnitus: earsClear ? null : Phase3Controller.mapEarConditionsToInteger(screeningData.left_tinnitus, screeningData.right_tinnitus),
-        otc_atresia: earsClear ? null : Phase3Controller.mapEarConditionsToInteger(screeningData.left_atresia, screeningData.right_atresia),
-        otc_implant: earsClear ? null : Phase3Controller.mapEarConditionsToInteger(screeningData.left_implant, screeningData.right_implant),
         otc_other: earsClear ? null : Phase3Controller.mapEarConditionsToInteger(screeningData.left_other, screeningData.right_other),
         medical_recommendation: earsClear ? null : (screeningData.medical_recommendation ? String(screeningData.medical_recommendation).trim() : null),
         medication_given: earsClear ? null : (medicationGiven.length > 0 ? medicationGiven : null),
@@ -147,7 +170,6 @@ static async createRegistration(req, res) {
         comments: earsClear ? null : (screeningData.otoscopy_comments || screeningData.comments || null),
       }
 
-      // filter to actual ear_screening columns in DB
       const colsRes = await client.query(`
         SELECT column_name FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'ear_screening'
@@ -170,17 +192,13 @@ static async createRegistration(req, res) {
         return ResponseHandler.error(res, "Patient ID is required", 400)
       }
 
-      const columns = Object.keys(finalMapped).join(", ")
-      const placeholders = Object.keys(finalMapped).map((_, i) => `$${i + 1}`).join(", ")
-      const values = Object.values(finalMapped)
-
       const query = `
-        INSERT INTO ear_screening (${columns})
-        VALUES (${placeholders})
+        INSERT INTO ear_screening (${Object.keys(finalMapped).join(", ")})
+        VALUES (${Object.keys(finalMapped).map((_, i) => `$${i + 1}`).join(", ")})
         RETURNING *
       `
 
-      const result = await client.query(query, values)
+      const result = await client.query(query, Object.values(finalMapped))
 
       await client.query(
         `INSERT INTO audit_logs (table_name, record_id, action_type, new_data, changed_by_user_id) VALUES ($1,$2,$3,$4,$5)`,
@@ -208,7 +226,11 @@ static async createRegistration(req, res) {
       assessmentData.completed_by_user_id = req.user?.user_id
       assessmentData.phase_id = 3
 
-      // Helper to map boolean -> 1/0/null
+      // RESOLVE PHASE 3 REG ID (ADDED)
+      const phase3_reg_id = await resolvePhaseRegistrationId(
+        client, 3, assessmentData.patient_id, assessmentData.phase3_reg_id
+      )
+
       const b2i = (v) => {
         if (v === undefined || v === null) return null
         return v ? 1 : 0
@@ -324,8 +346,8 @@ static async createRegistration(req, res) {
       const mappedData = {
         patient_id: Number(assessmentData.patient_id),
         phase_id: 3,
+        phase3_reg_id, // ADDED
         completed_by_user_id: Number(assessmentData.completed_by_user_id) || null,
-
         // unified eval fields
         eval_hearing_aid_dead_broken,
         eval_hearing_aid_internal_feedback,
@@ -334,14 +356,11 @@ static async createRegistration(req, res) {
         eval_hearing_aid_power_change_too_loud,
         eval_hearing_aid_lost_stolen,
         eval_hearing_aid_no_problem,
-
         eval_earmold_discomfort_too_tight,
         eval_earmold_feedback_too_loose,
         eval_earmold_damaged_tubing_cracked,
         eval_earmold_lost_stolen,
         eval_earmold_no_problem,
-
-        // unified services
         service_tested_wfa_demo_hearing_aids,
         service_hearing_aid_sent_for_repair_replacement,
         service_not_benefiting_from_hearing_aid,
@@ -351,8 +370,6 @@ static async createRegistration(req, res) {
         service_fit_stock_earmold,
         service_took_new_ear_impression,
         service_refit_custom_earmold,
-
-        // keep comment + general services
         comment: assessmentData.comment || assessmentData.comments || null,
         gs_counseling: assessmentData.counseling_provided === undefined ? null : Boolean(assessmentData.counseling_provided),
         gs_batteries_13_qty: Number(assessmentData.batteries_provided_13) || 0,
@@ -394,22 +411,50 @@ static async createRegistration(req, res) {
         return ResponseHandler.error(res, "Patient ID is required", 400)
       }
 
-      const columns = Object.keys(finalMapped).join(", ")
-      const placeholders = Object.keys(finalMapped).map((_, i) => `$${i + 1}`).join(", ")
-      const values = Object.values(finalMapped)
-
       const query = `
-        INSERT INTO aftercare_assessment (${columns})
-        VALUES (${placeholders})
+        INSERT INTO aftercare_assessment (${Object.keys(finalMapped).join(", ")})
+        VALUES (${Object.keys(finalMapped).map((_, i) => `$${i + 1}`).join(", ")})
         RETURNING *
       `
 
-      const result = await client.query(query, values)
+      const result = await client.query(query, Object.values(finalMapped))
 
+      // audit log
+      const newId = result.rows[0].assessment_id || null
       await client.query(
         `INSERT INTO audit_logs (table_name, record_id, action_type, new_data, changed_by_user_id) VALUES ($1,$2,$3,$4,$5)`,
-        ["aftercare_assessment", result.rows[0].assessment_id, "CREATE", JSON.stringify(finalMapped), req.user?.user_id || null],
+        ["aftercare_assessment", newId, "CREATE", JSON.stringify(finalMapped), req.user?.user_id || null],
       )
+
+      // Inventory usage - batteries (Phase 3 Aftercare)
+      try {
+        const qty13 = mappedData.gs_batteries_13_qty || 0
+        const qty675 = mappedData.gs_batteries_675_qty || 0
+        if (qty13 > 0) {
+          await InventoryService.updateStockByCode(
+            client,
+            "SUP-00100",                 // adjust item_code if different
+            -qty13,
+            "Used",
+            req.user.user_id,
+            "Phase 3 Aftercare battery 13 provided",
+            { patient_id: mappedData.patient_id, phase_id: 3, related_event_type: "AFTERCARE_BATTERY" }
+          )
+        }
+        if (qty675 > 0) {
+          await InventoryService.updateStockByCode(
+            client,
+            "SUP-00101",
+            -qty675,
+            "Used",
+            req.user.user_id,
+            "Phase 3 Aftercare battery 675 provided",
+            { patient_id: mappedData.patient_id, phase_id: 3, related_event_type: "AFTERCARE_BATTERY" }
+          )
+        }
+      } catch (invErr) {
+        console.warn("Phase3 Aftercare battery deduction failed:", invErr.message)
+      }
 
       await client.query("COMMIT")
       return ResponseHandler.success(res, result.rows[0], "Aftercare assessment created successfully", 201)
@@ -450,6 +495,9 @@ static async createRegistration(req, res) {
         await client.query("ROLLBACK")
         return ResponseHandler.error(res, "Patient ID is required", 400)
       }
+
+      const phase3_reg_id = await resolvePhaseRegistrationId(client, 3, qcData.patient_id, qcData.phase3_reg_id);
+      mappedData.phase3_reg_id = phase3_reg_id;
 
       const columns = Object.keys(mappedData).join(", ")
       const placeholders = Object.keys(mappedData).map((_, i) => `$${i + 1}`).join(", ")
@@ -901,39 +949,225 @@ static async createRegistration(req, res) {
   // Get complete Phase 3 data for a patient
   static async getPhase3Data(req, res) {
     try {
-      const { patientId } = req.params
+      const { patientId, regId } = req.params;
+      const baseParams = [Number(patientId)];
+      let phase3RegId = regId ? Number(regId) : null;
+
+      if (!phase3RegId) {
+        const r = await db.query(
+          `SELECT phase3_reg_id FROM phase3_registration_section
+           WHERE patient_id = $1 ORDER BY registration_date DESC, created_at DESC LIMIT 1`,
+          baseParams
+        );
+        phase3RegId = r.rows[0]?.phase3_reg_id || null;
+      }
+
+      const regFilter = phase3RegId ? "AND phase3_reg_id = $2" : "";
+      const params = phase3RegId ? [Number(patientId), phase3RegId] : [Number(patientId)];
 
       const queries = {
         registration: `
-          SELECT * FROM phase3_registration_section 
-          WHERE patient_id = $1 ORDER BY created_at DESC LIMIT 1
-        `,        
+          SELECT * FROM phase3_registration_section
+          WHERE patient_id = $1 ${phase3RegId ? "AND phase3_reg_id = $2" : ""}
+          ORDER BY created_at DESC LIMIT 1
+        `,
         earScreening: `
-          SELECT * FROM ear_screening 
-          WHERE patient_id = $1 AND phase_id = 3 ORDER BY created_at DESC
+          SELECT * FROM ear_screening
+          WHERE patient_id = $1 AND phase_id = 3 ${regFilter}
+          ORDER BY created_at DESC
         `,
         aftercareAssessment: `
-          SELECT * FROM aftercare_assessment 
-          WHERE patient_id = $1 ORDER BY created_at DESC LIMIT 1
+          SELECT * FROM aftercare_assessment
+          WHERE patient_id = $1 ${regFilter}
+          ORDER BY created_at DESC LIMIT 1
         `,
         finalQC: `
-          SELECT * FROM final_qc_p3 
-          WHERE patient_id = $1 ORDER BY created_at DESC LIMIT 1
-        `,
+          SELECT * FROM final_qc_p3
+          WHERE patient_id = $1 ${regFilter}
+          ORDER BY created_at DESC LIMIT 1
+        `
+      };
 
+      const results = {};
+      for (const [k, q] of Object.entries(queries)) {
+        const r = await db.query(q, params);
+        results[k] = k === "earScreening" ? r.rows : r.rows[0] || null;
       }
 
-      const results = {}
+      return ResponseHandler.success(res, { phase3_reg_id: phase3RegId, ...results }, "Phase 3 data retrieved");
+    } catch (e) {
+      console.error("getPhase3Data error:", e);
+      return ResponseHandler.error(res, "Failed to retrieve Phase 3 data");
+    }
+  }
 
-      for (const [key, query] of Object.entries(queries)) {
-        const result = await db.query(query, [patientId])
-        results[key] = key === "earScreening" ? result.rows : result.rows[0] || null
+  // ADD NEW: resume fetch controller
+  static async getPhase3ResumeData(req, res) {
+    const client = await db.getClient()
+    try {
+      const pid = Number(req.params.patientId)
+      if (!pid) return ResponseHandler.error(res, "Invalid patient ID", 400)
+
+      // Resolve latest phase3_reg_id if not supplied or is 0
+      const provided = req.params.regId
+      const phase3_reg_id = await resolvePhaseRegistrationId(client, 3, pid, provided)
+
+      if (!phase3_reg_id) {
+        return ResponseHandler.success(
+          res,
+          {
+            phase3_reg_id: null,
+            sections: { registration: null, earScreening: [], aftercareAssessment: null, finalQC: null },
+            completeness: { registration: false, earScreening: false, aftercareAssessment: false, finalQC: false },
+            all_complete: false,
+          },
+          "No Phase 3 registration yet"
+        )
       }
 
-      return ResponseHandler.success(res, results, "Phase 3 data retrieved successfully")
-    } catch (error) {
-      console.error("Get Phase 3 data error:", error)
-      return ResponseHandler.error(res, "Failed to retrieve Phase 3 data")
+      const params = [pid, phase3_reg_id]
+
+      // Registration
+      const regQ = await client.query(
+        `SELECT *
+           FROM phase3_registration_section
+          WHERE patient_id = $1 AND phase3_reg_id = $2
+          LIMIT 1`,
+        params
+      )
+      const registration = regQ.rows[0] || null
+
+      // Ear screening (Phase 3 only)
+      const earQ = await client.query(
+        `SELECT *
+           FROM ear_screening
+          WHERE patient_id = $1 AND phase_id = 3 AND phase3_reg_id = $2
+          ORDER BY created_at DESC`,
+        params
+      )
+      const earScreening = earQ.rows || []
+
+      // Aftercare assessment (ensure table has phase3_reg_id)
+      const aftercareQ = await client.query(
+        `SELECT *
+           FROM aftercare_assessment
+          WHERE patient_id = $1 AND phase3_reg_id = $2
+          ORDER BY created_at DESC
+          LIMIT 1`,
+        params
+      )
+      const aftercareAssessment = aftercareQ.rows[0] || null
+
+      // Final QC (Phase 3 table, scoped to reg)
+      const finalQ = await client.query(
+        `SELECT *
+           FROM final_qc_p3
+          WHERE patient_id = $1 AND phase3_reg_id = $2
+          ORDER BY created_at DESC
+          LIMIT 1`,
+        params
+      )
+      const finalQC = finalQ.rows[0] || null
+
+      const completeness = {
+        registration: !!registration,
+        earScreening: earScreening.length > 0,
+        aftercareAssessment: !!aftercareAssessment,
+        finalQC: !!finalQC,
+      }
+      const all_complete = Object.values(completeness).every(Boolean)
+
+      return ResponseHandler.success(
+        res,
+        {
+          phase3_reg_id,
+          sections: { registration, earScreening, aftercareAssessment, finalQC },
+          completeness,
+          all_complete,
+        },
+        "Phase 3 resume data retrieved"
+      )
+    } catch (e) {
+      console.error("getPhase3ResumeData error:", e)
+      return ResponseHandler.error(res, "Failed to retrieve resume data")
+    } finally {
+      client.release()
+    }
+  }
+
+  // NEW: Get all Phase 3 sections by patient + registration id
+  static async getPhase3Sections(req, res) {
+    try {
+      const patientId = Number(req.params.patientId)
+      const regId = Number(req.params.regId)
+
+      if (!patientId || !regId) {
+        return ResponseHandler.error(res, "Invalid patient or registration id", 400)
+      }
+
+      // Verify registration belongs to patient
+      const regResult = await db.query(
+        `SELECT * FROM phase3_registration_section
+         WHERE patient_id = $1 AND phase3_reg_id = $2
+         LIMIT 1`,
+        [patientId, regId]
+      )
+      const registration = regResult.rows[0] || null
+      if (!registration) {
+        return ResponseHandler.notFound(res, "Phase 3 registration not found for patient")
+      }
+
+      const earScreeningsRes = await db.query(
+        `SELECT * FROM ear_screening
+         WHERE patient_id = $1 AND phase_id = 3 AND phase3_reg_id = $2
+         ORDER BY created_at DESC`,
+        [patientId, regId]
+      )
+
+      const aftercareRes = await db.query(
+        `SELECT * FROM aftercare_assessment
+         WHERE patient_id = $1 AND phase3_reg_id = $2
+         ORDER BY created_at DESC`,
+        [patientId, regId]
+      )
+
+      const finalQCRes = await db.query(
+        `SELECT * FROM final_qc_p3
+         WHERE patient_id = $1 AND phase3_reg_id = $2
+         ORDER BY created_at DESC`,
+        [patientId, regId]
+      )
+
+      const sections = {
+        registration,
+        earScreenings: earScreeningsRes.rows,
+        aftercareAssessments: aftercareRes.rows,
+        finalQCs: finalQCRes.rows,
+      }
+
+      const completeness = {
+        registration: !!registration,
+        earScreening: sections.earScreenings.length > 0,
+        aftercareAssessment: sections.aftercareAssessments.length > 0,
+        finalQC: sections.finalQCs.length > 0,
+      }
+
+      const all_complete = Object.values(completeness).every(Boolean)
+
+      return ResponseHandler.success(
+        res,
+        {
+          patient_id: patientId,
+          phase3_reg_id: regId,
+          sections,
+          completeness,
+          all_complete,
+        },
+        "Phase 3 sections retrieved",
+      )
+    } catch (e) {
+      console.error("getPhase3Sections error:", e)
+      return ResponseHandler.error(res, "Failed to retrieve Phase 3 sections")
     }
   }
 }

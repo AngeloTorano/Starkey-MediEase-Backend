@@ -81,7 +81,7 @@ router.get(
 
 // Get complete Phase 1 data for a patient
 router.get(
-  "/patient/:patientId",
+  "/patient/:patientId/registration/:regId",
   requireRole(["Admin", "City Coordinator", "Country Coordinator"]),
   Phase1Controller.getPhase1Data,
 )

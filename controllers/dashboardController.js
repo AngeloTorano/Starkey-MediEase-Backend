@@ -88,7 +88,6 @@ const buildCoordsMap = () => {
         }
       }
     }
-    console.log(`[Dashboard] Loaded ${map.size} unique city names from JSON.`);
     return map;
   } catch (error) {
     console.error(

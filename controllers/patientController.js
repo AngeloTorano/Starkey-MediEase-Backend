@@ -1,41 +1,85 @@
 const db = require("../config/database")
 const ResponseHandler = require("../utils/responseHandler")
 
+// Helper: normalize city_assigned from token or DB into a string[]
+function normalizeAssignedCities(val) {
+  if (!val) return []
+  if (Array.isArray(val)) {
+    return [...new Set(val.map((x) => String(x).trim()).filter(Boolean))]
+  }
+  // Accept formats like "CityA,CityB" or "{CityA,CityB}" or "CityA|CityB"
+  const s = String(val).trim().replace(/^[\[{]\s*|\s*[\]}]$/g, "")
+  if (!s) return []
+  const parts = s.split(/[,;|]/).map((x) => x.trim()).filter(Boolean)
+  return [...new Set(parts)]
+}
+
+async function getAssignedCitiesForUser(user) {
+  // Prefer value embedded in JWT/session if present
+  const fromToken = normalizeAssignedCities(user?.city_assigned)
+  if (fromToken.length) return fromToken
+
+  // Fallback: load from DB
+  try {
+    const res = await db.query(
+      "SELECT city_assigned FROM users WHERE user_id = $1 LIMIT 1",
+      [user?.user_id]
+    )
+    return normalizeAssignedCities(res.rows?.[0]?.city_assigned)
+  } catch {
+    return []
+  }
+}
+
 class PatientController {
 static async findPatientIdByShf(req, res) {
   try {
     const { shf } = req.query;
     if (!shf) {
-      return res.status(400).json({ error: "Missing 'shf' query parameter" });
+      return res.status(400).json({ error: "SHF ID is required" });
     }
 
     let resDb;
+
+    // This query will now also check for a phase 2 registration
+    const query = `
+      SELECT 
+        p.patient_id, p.last_name, p.first_name, p.date_of_birth, p.age, p.gender, 
+        p.mobile_number, p.employment_status, p.highest_education_level,
+        EXISTS (
+          SELECT 1 FROM phase2_registration_section prs 
+          WHERE prs.patient_id = p.patient_id
+        ) as has_phase2_record
+      FROM patients p 
+      WHERE p.shf_id ILIKE $1
+    `;
 
     // Check if this is a numeric SHF ID (contains only numbers after SHF prefix)
     // This will match: PH-SHF123, SHF456, but NOT SHF-abc123
     const numericMatch = shf.match(/^(?:PH-)?SHF(\d+)$/i);
     if (numericMatch) {
-      const numericValue = numericMatch[1];
-      const query = `
-        SELECT patient_id, last_name, first_name, date_of_birth,age, gender, mobile_number, employment_status, highest_education_level
-        FROM patients
-        WHERE REPLACE(REPLACE(shf_id, 'PH-SHF', ''), 'SHF', '')::INT = $1::INT
-        LIMIT 1
-      `;
-      resDb = await db.query(query, [numericValue]);
+      // Search for both prefixed and non-prefixed versions
+      resDb = await db.query(
+        `
+          SELECT 
+            p.patient_id, p.last_name, p.first_name, p.date_of_birth, p.age, p.gender, 
+            p.mobile_number, p.employment_status, p.highest_education_level,
+            EXISTS (
+              SELECT 1 FROM phase2_registration_section prs 
+              WHERE prs.patient_id = p.patient_id
+            ) as has_phase2_record
+          FROM patients p 
+          WHERE p.shf_id ILIKE $1 OR p.shf_id ILIKE $2
+        `,
+        [`%SHF${numericMatch[1]}`, `%SHF-${numericMatch[1]}`]
+      );
     } else {
-      // For non-numeric SHF IDs (like SHF-uxYW0ytZWs), do exact match
-      const query = `
-        SELECT patient_id
-        FROM patients
-        WHERE shf_id = $1
-        LIMIT 1
-      `;
+      // Fallback to a simple ILIKE search if it's not a standard numeric ID
       resDb = await db.query(query, [shf]);
     }
 
     if (resDb.rows.length === 0) {
-      return res.status(404).json({ error: `Patient not found for shf_id: ${shf}` });
+      return res.status(404).json({ error: "Patient not found" });
     }
 
     res.json ({ 
@@ -47,7 +91,8 @@ static async findPatientIdByShf(req, res) {
       gender: resDb.rows[0].gender,
       mobile_number: resDb.rows[0].mobile_number,
       employment_status: resDb.rows[0].employment_status,
-      highest_education_level: resDb.rows[0].highest_education_level
+      highest_education_level: resDb.rows[0].highest_education_level,
+      has_phase2_record: resDb.rows[0].has_phase2_record
     });
   } catch (err) {
     console.error("Error resolving SHF ID:", err);
@@ -127,9 +172,6 @@ static async findPatientIdByShf(req, res) {
       const placeholders = keys.map((_, idx) => `$${idx + 1}`).join(", ");
       const values = keys.map((k) => patientData[k]);
 
-      // Debug log (optional, remove in production)
-      // console.log("INSERT INTO patients (" + columns + ") VALUES (" + placeholders + ")", values);
-
       const query = `
       INSERT INTO patients (${columns})
       VALUES (${placeholders})
@@ -184,35 +226,49 @@ static async findPatientIdByShf(req, res) {
       const conditions = [];
       const params = [];
 
-      // Filtering by user role
-      if (req.user && req.user.roles) {
-        if (req.user.roles.includes("City Coordinator")) {
-          conditions.push(`p.user_id = $${params.length + 1}`);
-          params.push(req.user.user_id);
+      // Exclude archived patients by default
+      conditions.push(`p.archived = FALSE`);
+
+      // Normalize roles
+      const roles = Array.isArray(req.user?.roles)
+        ? req.user.roles.map((r) => String(r).toLowerCase())
+        : [];
+      const isAdmin = roles.includes("admin");
+      const isCountryCoordinator =
+        roles.includes("country_coordinator") || roles.includes("country coordinator");
+      const isCityCoordinator =
+        roles.includes("city_coordinator") || roles.includes("city coordinator");
+
+      // City Coordinator restricted to assigned cities (from users.city_assigned)
+      if (!isAdmin && !isCountryCoordinator && isCityCoordinator) {
+        const userCities = await getAssignedCitiesForUser(req.user)
+        if (userCities.length > 0) {
+          conditions.push(`p.city_village = ANY($${params.length + 1})`);
+          params.push(userCities);
+        } else {
+          conditions.push("1=0"); // no assigned cities => no results
         }
-        // For admin/country_coordinator, do not filter by user_id
       }
 
+      // Optional filters
       if (search) {
-        conditions.push(`(p.first_name ILIKE $${params.length + 1} OR p.last_name ILIKE $${params.length + 1} OR p.shf_id ILIKE $${params.length + 1})`);
+        conditions.push(
+          `(p.first_name ILIKE $${params.length + 1} OR p.last_name ILIKE $${params.length + 1} OR p.shf_id ILIKE $${params.length + 1})`
+        );
         params.push(`%${search}%`);
       }
-
       if (city) {
         conditions.push(`p.city_village = $${params.length + 1}`);
         params.push(city);
       }
-
       if (country) {
         conditions.push(`p.region_district = $${params.length + 1}`);
         params.push(country);
       }
-
       if (phase_id) {
         conditions.push(`pp.phase_id = $${params.length + 1}`);
         params.push(phase_id);
       }
-
       if (status) {
         conditions.push(`pp.status = $${params.length + 1}`);
         params.push(status);
@@ -418,15 +474,14 @@ static async getPatientById(req, res) {
       const offset = (page - 1) * limit
 
       let query = `
-        SELECT p.*, pp.status as phase_status, pp.phase_start_date, pp.phase_end_date,
-               ph.phase_name, u.username as completed_by
-        FROM patients p
-        INNER JOIN patient_phases pp ON p.patient_id = pp.patient_id
-        LEFT JOIN phases ph ON pp.phase_id = ph.phase_id
-        LEFT JOIN users u ON pp.completed_by_user_id = u.user_id
-        WHERE pp.phase_id = $1
-      `
-
+        SELECT p.*, pp.status as phase_status, pp.phase_start_date, pp.phase_end_date,
+               ph.phase_name, u.username as completed_by
+        FROM patients p
+        INNER JOIN patient_phases pp ON p.patient_id = pp.patient_id
+        LEFT JOIN phases ph ON pp.phase_id = ph.phase_id
+        LEFT JOIN users u ON pp.completed_by_user_id = u.user_id
+        WHERE pp.phase_id = $1
+      `
       const params = [phaseId]
 
       if (status) {
@@ -434,22 +489,23 @@ static async getPatientById(req, res) {
         params.push(status)
       }
 
-      // Apply location-based filtering for non-admin users
-      if (!req.user.roles.includes("admin")) {
-        if (req.user.roles.includes("city_coordinator")) {
-          const userCities = req.user.locations.filter((loc) => loc.city_id).map((loc) => loc.city_name)
+      // Role restrictions: only City Coordinator limited to city_assigned
+      const roles = Array.isArray(req.user?.roles)
+        ? req.user.roles.map((r) => String(r).toLowerCase())
+        : [];
+      const isAdmin = roles.includes("admin");
+      const isCountryCoordinator =
+        roles.includes("country_coordinator") || roles.includes("country coordinator");
+      const isCityCoordinator =
+        roles.includes("city_coordinator") || roles.includes("city coordinator");
 
-          if (userCities.length > 0) {
-            query += ` AND p.city_village = ANY($${params.length + 1})`
-            params.push(userCities)
-          }
-        } else if (req.user.roles.includes("country_coordinator")) {
-          const userCountries = req.user.locations.filter((loc) => loc.country_id).map((loc) => loc.country_name)
-
-          if (userCountries.length > 0) {
-            query += ` AND p.region_district = ANY($${params.length + 1})`
-            params.push(userCountries)
-          }
+      if (!isAdmin && !isCountryCoordinator && isCityCoordinator) {
+        const userCities = await getAssignedCitiesForUser(req.user)
+        if (userCities.length > 0) {
+          query += ` AND p.city_village = ANY($${params.length + 1})`
+          params.push(userCities)
+        } else {
+          query += ` AND 1=0`
         }
       }
 
@@ -457,7 +513,6 @@ static async getPatientById(req, res) {
       params.push(limit, offset)
 
       const result = await db.query(query, params)
-
       return ResponseHandler.success(res, result.rows, `Patients in Phase ${phaseId} retrieved successfully`)
     } catch (error) {
       console.error("Get patients by phase error:", error)

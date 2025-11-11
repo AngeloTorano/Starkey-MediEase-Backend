@@ -63,26 +63,33 @@ class InventoryService {
       [newStockLevel, supply.supply_id],
     )
 
+    // Extract optional meta
     const { patient_id = null, phase_id = null, related_event_type = null } = meta || {}
 
+    // 5. Record the transaction with patient linkage and explicit transaction_date
     await client.query(
       "INSERT INTO supply_transactions (supply_id, transaction_type_id, quantity, transaction_date, recorded_by_user_id, notes, patient_id, phase_id, related_event_type) VALUES ($1, $2, $3, CURRENT_TIMESTAMP, $4, $5, $6, $7, $8)",
       [supply.supply_id, transactionTypeId, quantityChange, userId, notes || null, patient_id, phase_id, related_event_type],
     )
 
-    const auditTableCheck = await client.query("SELECT to_regclass('public.audit_logs') as exists;")
+    // 6. Log the audit trail (if you have an audit_logs table)
+    // Check if audit_logs table exists before trying to insert
+    const auditTableCheck = await client.query(
+      "SELECT to_regclass('public.audit_logs') as exists;"
+    );
+    
     if (auditTableCheck.rows[0].exists) {
-      await client.query(
-        "INSERT INTO audit_logs (table_name, record_id, action_type, old_data, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5, $6)",
-        [
-          "supplies",
-          supply.supply_id,
-          "STOCK_UPDATE",
-          JSON.stringify({ old_stock: currentStock }),
-          JSON.stringify({ new_stock: newStockLevel, quantityChange, transaction_type: transactionTypeName, patient_id, phase_id, related_event_type }),
-          userId,
-        ],
-      )
+        await client.query(
+          "INSERT INTO audit_logs (table_name, record_id, action_type, old_data, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5, $6)",
+          [
+            "supplies",
+            supply.supply_id,
+            "STOCK_UPDATE",
+            JSON.stringify({ old_stock: currentStock }),
+            JSON.stringify({ new_stock: newStockLevel, quantityChange, transaction_type: transactionTypeName, patient_id, phase_id, related_event_type }),
+            userId,
+          ],
+        )
     }
 
     return { new_stock_level: newStockLevel }

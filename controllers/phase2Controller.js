@@ -1,6 +1,8 @@
 const db = require("../config/database")
 const ResponseHandler = require("../utils/responseHandler")
 const { mapEarConditionsToInteger } = require("./phase3Controller")
+const { resolvePhaseRegistrationId } = require("../utils/resolveRegistration")
+const InventoryService = require("../services/inventoryService")
 
 class Phase2Controller {
   // Phase 2 Registration Section
@@ -13,9 +15,6 @@ class Phase2Controller {
       const registrationData = req.body || {}
       registrationData.completed_by_user_id = req.user?.user_id
       registrationData.phase_id = 2
-
-      // Debug logs to verify data coming from frontend
-      console.log("Raw registrationData:", registrationData)
 
       const mappedData = {
         patient_id: Number(registrationData.patient_id) || null,
@@ -35,9 +34,6 @@ class Phase2Controller {
           delete mappedData[key]
         }
       })
-
-      // Debugging output for mapped data
-      console.log("Mapped Data:", mappedData)
 
       // ✅ Validate required fields
       if (!mappedData.patient_id || isNaN(mappedData.patient_id)) {
@@ -64,9 +60,6 @@ class Phase2Controller {
         VALUES (${placeholders})
         RETURNING *
       `
-
-      console.log("Registration Query:", query)
-      console.log("Registration Values:", values)
 
       const result = await client.query(query, values)
 
@@ -105,10 +98,10 @@ class Phase2Controller {
       const isLeft = !!left && (left === true || String(left).toLowerCase() === "yes")
       const isRight = !!right && (right === true || String(right).toLowerCase() === "yes")
 
-      if (isLeft && isRight) return 3 // Both
-      if (isLeft) return 1 // Left only
-      if (isRight) return 2 // Right only
-      return 0 // None
+      if (isLeft && isRight) return 3
+      if (isLeft) return 1
+      if (isRight) return 2
+      return 0
     }
 
     try {
@@ -118,29 +111,33 @@ class Phase2Controller {
       screeningData.completed_by_user_id = req.user?.user_id
       screeningData.phase_id = 2
 
-      // Debug raw data from frontend
-      console.log("Raw screeningData:", screeningData)
+      // Resolve registration id first
+      const phase2_reg_id = await resolvePhaseRegistrationId(
+        client,
+        2,
+        screeningData.patient_id,
+        screeningData.phase2_reg_id
+      )
 
-      // Collect medication checkboxes into a TEXT[] array
+      // Support either field name from frontend validation/schema
+      const earsClearRaw =
+        screeningData.ears_clear ?? screeningData.ears_clear_for_assessment ?? screeningData.ears_clear_for_fitting
+
+      const earsClear = String(earsClearRaw).toLowerCase() === "yes"
+
       const medicationGiven = []
       if (screeningData.medication_antibiotic) medicationGiven.push("Antibiotic")
       if (screeningData.medication_analgesic) medicationGiven.push("Analgesic")
       if (screeningData.medication_antiseptic) medicationGiven.push("Antiseptic")
       if (screeningData.medication_antifungal) medicationGiven.push("Antifungal")
 
-      // Determine if both ears were reported clear for impressions
-      const earsClear = String(screeningData.ears_clear).toLowerCase() === "yes"
-
       const mappedData = {
         patient_id: Number(screeningData.patient_id),
         phase_id: 2,
+        phase2_reg_id: phase2_reg_id || null,
         completed_by_user_id: Number(screeningData.completed_by_user_id) || null,
         screening_name: "Fitting",
-
-        // Initial Ears Clear (Uses explicit fields from the UI)
         ears_clear: earsClear ? "Yes" : "No",
-
-        // Map ear conditions using the helper function — set to null when both ears are clear
         otc_wax: earsClear ? null : mapEarConditionsToInteger(screeningData.left_wax, screeningData.right_wax),
         otc_infection: earsClear
           ? null
@@ -158,16 +155,14 @@ class Phase2Controller {
           ? null
           : mapEarConditionsToInteger(screeningData.left_implant, screeningData.right_implant),
         otc_other: earsClear ? null : mapEarConditionsToInteger(screeningData.left_other, screeningData.right_other),
-
-        // Text fields and medication arrays — set to null when both ears are clear
         medical_recommendation: earsClear
           ? null
           : screeningData.medical_recommendation
             ? String(screeningData.medical_recommendation).trim()
             : null,
         medication_given: earsClear ? null : medicationGiven.length > 0 ? medicationGiven : null,
-
-        // Comments
+        left_ear_clear_for_fitting: screeningData.left_ear_clear_for_assessment || screeningData.left_ear_clear_for_fitting || null,
+        right_ear_clear_for_fitting: screeningData.right_ear_clear_for_assessment || screeningData.right_ear_clear_for_fitting || null,
         comments: earsClear ? null : screeningData.comments ? String(screeningData.comments).trim() : null,
       }
 
@@ -191,8 +186,6 @@ class Phase2Controller {
         finalMapped[key] = value
       }
 
-      // Debug mapped data
-      console.log("Mapped Ear Screening Data (filtered to existing columns):", finalMapped)
 
       // ✅ Validate required fields
       if (!finalMapped.patient_id || isNaN(finalMapped.patient_id)) {
@@ -213,9 +206,6 @@ class Phase2Controller {
         VALUES (${placeholders})
         RETURNING *
       `
-
-      console.log("Ear Screening Query:", query)
-      console.log("Ear Screening Values:", values)
 
       const result = await client.query(query, values)
 
@@ -258,9 +248,17 @@ class Phase2Controller {
       hearingScreeningData.completed_by_user_id = req.user?.user_id
       hearingScreeningData.phase_id = 2
 
+      const phase2_reg_id = await resolvePhaseRegistrationId(
+        client,
+        2,
+        hearingScreeningData.patient_id,
+        hearingScreeningData.phase2_reg_id
+      )
+
       const mappedData = {
         patient_id: Number(hearingScreeningData.patient_id),
         phase_id: 2,
+        phase2_reg_id: phase2_reg_id || null,
         completed_by_user_id: Number(hearingScreeningData.completed_by_user_id) || null,
         screening_method: hearingScreeningData.screening_method
           ? String(hearingScreeningData.screening_method).trim()
@@ -283,8 +281,6 @@ class Phase2Controller {
         }
       })
 
-      console.log("Mapped Hearing Screening Data:", mappedData)
-
       // Validate required fields
       if (!mappedData.patient_id || isNaN(mappedData.patient_id)) {
         await client.query("ROLLBACK")
@@ -303,9 +299,6 @@ class Phase2Controller {
         VALUES (${placeholders})
         RETURNING *
       `
-
-      console.log("Hearing Screening Query:", query)
-      console.log("Hearing Screening Values:", values)
 
       const result = await client.query(query, values)
 
@@ -344,9 +337,17 @@ class Phase2Controller {
       fittingData.fitter_id = req.user?.user_id
       fittingData.phase_id = 2
 
+      const phase2_reg_id = await resolvePhaseRegistrationId(
+        client,
+        2,
+        fittingData.patient_id,
+        fittingData.phase2_reg_id
+      )
+
       const mappedData = {
         patient_id: Number(fittingData.patient_id),
         phase_id: 2,
+        phase2_reg_id: phase2_reg_id || null,
         fitter_id: Number(fittingData.fitter_id) || null,
         fitting_left_power_level: fittingData.fitting_left_power_level
           ? String(fittingData.fitting_left_power_level).trim()
@@ -375,8 +376,6 @@ class Phase2Controller {
         }
       })
 
-      console.log("Mapped Fitting Table Data:", mappedData)
-
       // Validate required fields
       if (!mappedData.patient_id || isNaN(mappedData.patient_id)) {
         await client.query("ROLLBACK")
@@ -395,9 +394,6 @@ class Phase2Controller {
         VALUES (${placeholders})
         RETURNING *
       `
-
-      console.log("Fitting Table Query:", query)
-      console.log("Fitting Table Values:", values)
 
       const result = await client.query(query, values)
 
@@ -435,28 +431,24 @@ class Phase2Controller {
       const fittingData = req.body || {}
       fittingData.fitter_id = req.user?.user_id
 
+      const phase2_reg_id = await resolvePhaseRegistrationId(
+        client,
+        2,
+        fittingData.patient_id,
+        fittingData.phase2_reg_id
+      )
+
       const mappedData = {
         patient_id: Number(fittingData.patient_id),
+        phase2_reg_id: phase2_reg_id || null,
         fitter_id: Number(fittingData.fitter_id) || null,
         number_of_hearing_aid: Number(fittingData.number_of_hearing_aid) || 0,
         special_device: fittingData.special_device ? String(fittingData.special_device).trim() : null,
         normal_hearing: mapEarConditionsToInteger(fittingData.normal_hearing_left, fittingData.normal_hearing_right),
-        distortion: mapEarConditionsToInteger(
-          fittingData.distortion_left,
-          fittingData.distortion_right
-        ),
-        implant: mapEarConditionsToInteger(
-          fittingData.implant_left,
-          fittingData.implant_right
-        ),
-        recruitment: mapEarConditionsToInteger(
-          fittingData.recruitment_left,
-          fittingData.recruitment_right
-        ),
-        no_response: mapEarConditionsToInteger(
-          fittingData.no_response_left,
-          fittingData.no_response_right
-        ),
+        distortion: mapEarConditionsToInteger(fittingData.distortion_left, fittingData.distortion_right),
+        implant: mapEarConditionsToInteger(fittingData.implant_left, fittingData.implant_right),
+        recruitment: mapEarConditionsToInteger(fittingData.recruitment_left, fittingData.recruitment_right),
+        no_response: mapEarConditionsToInteger(fittingData.no_response_left, fittingData.no_response_right),
         other: mapEarConditionsToInteger(fittingData.other_left, fittingData.other_right),
         comment: fittingData.comment ? String(fittingData.comment).trim() : null,
         clear_for_counseling: Boolean(fittingData.clear_for_counseling) || false,
@@ -468,8 +460,6 @@ class Phase2Controller {
           delete mappedData[key]
         }
       })
-
-      console.log("Mapped Fitting Data:", mappedData)
 
       // Validate required fields
       if (!mappedData.patient_id || isNaN(mappedData.patient_id)) {
@@ -490,9 +480,6 @@ class Phase2Controller {
         RETURNING *
       `
 
-      console.log("Fitting Query:", query)
-      console.log("Fitting Values:", values)
-
       const result = await client.query(query, values)
 
       // Log creation
@@ -500,6 +487,22 @@ class Phase2Controller {
         "INSERT INTO audit_logs (table_name, record_id, action_type, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5)",
         ["fitting", result.rows[0].fitting_id, "CREATE", JSON.stringify(mappedData), req.user?.user_id || null],
       )
+
+      // Inventory usage example - earmold stock usage if custom impression done
+      const fittingPatientId = mappedData.patient_id
+      try {
+        if (mappedData.number_of_hearing_aid > 0) {
+          await InventoryService.updateStockByCode(
+            client,
+            "SUP-00010", // replace with actual earmold item_code
+            -mappedData.number_of_hearing_aid,
+            "Used",
+            req.user.user_id,
+            "Fitting earmold allocation",
+            { patient_id: fittingPatientId, phase_id: 2, related_event_type: "Fitting" }
+          )
+        }
+      } catch(e){ console.warn("Phase2 fitting inventory usage failed:", e.message) }
 
       await client.query("COMMIT")
 
@@ -523,8 +526,16 @@ class Phase2Controller {
       const counselingData = req.body || {}
       counselingData.completed_by_user_id = req.user?.user_id
 
+      const phase2_reg_id = await resolvePhaseRegistrationId(
+        client,
+        2,
+        counselingData.patient_id,
+        counselingData.phase2_reg_id
+      )
+
       const mappedData = {
         patient_id: Number(counselingData.patient_id),
+        phase2_reg_id: phase2_reg_id || null,
         completed_by_user_id: Number(counselingData.completed_by_user_id) || null,
         received_aftercare_information: Boolean(counselingData.received_aftercare_information) || false,
         trained_as_student_ambassador: Boolean(counselingData.trained_as_student_ambassador) || false,
@@ -536,8 +547,6 @@ class Phase2Controller {
           delete mappedData[key]
         }
       })
-
-      console.log("Mapped Counseling Data:", mappedData)
 
       // Validate required fields
       if (!mappedData.patient_id || isNaN(mappedData.patient_id)) {
@@ -557,9 +566,6 @@ class Phase2Controller {
         VALUES (${placeholders})
         RETURNING *
       `
-
-      console.log("Counseling Query:", query)
-      console.log("Counseling Values:", values)
 
       const result = await client.query(query, values)
 
@@ -591,8 +597,16 @@ class Phase2Controller {
       const qcData = req.body || {}
       qcData.completed_by_user_id = req.user?.user_id
 
+      const phase2_reg_id = await resolvePhaseRegistrationId(
+        client,
+        2,
+        qcData.patient_id,
+        qcData.phase2_reg_id
+      )
+
       const mappedData = {
         patient_id: Number(qcData.patient_id),
+        phase2_reg_id: phase2_reg_id || null,
         completed_by_user_id: Number(qcData.completed_by_user_id) || null,
         batteries_provided_13: Number(qcData.batteries_provided_13) || 0,
         batteries_provided_675: Number(qcData.batteries_provided_675) || 0,
@@ -608,8 +622,6 @@ class Phase2Controller {
           delete mappedData[key]
         }
       })
-
-      console.log("Mapped Final QC Data:", mappedData)
 
       // Validate required fields
       if (!mappedData.patient_id || isNaN(mappedData.patient_id)) {
@@ -630,9 +642,6 @@ class Phase2Controller {
         RETURNING *
       `
 
-      console.log("Final QC Query:", query)
-      console.log("Final QC Values:", values)
-
       const result = await client.query(query, values)
 
       // Log creation
@@ -640,6 +649,36 @@ class Phase2Controller {
         "INSERT INTO audit_logs (table_name, record_id, action_type, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5)",
         ["final_qc_p2", result.rows[0].final_qc_id, "CREATE", JSON.stringify(mappedData), req.user?.user_id || null],
       )
+
+      // Inventory usage - batteries (DEDUCT)
+      try {
+        const qty13 = mappedData.batteries_provided_13 || 0
+        const qty675 = mappedData.batteries_provided_675 || 0
+        if (qty13 > 0) {
+          await InventoryService.updateStockByCode(
+            client,
+            "SUP-00100",                // adjust if your actual item_code differs
+            -qty13,
+            "Used",
+            req.user.user_id,
+            "Phase 2 Final QC battery 13 provided",
+            { patient_id: mappedData.patient_id, phase_id: 2, related_event_type: "FINAL_QC_BATTERY" }
+          )
+        }
+        if (qty675 > 0) {
+          await InventoryService.updateStockByCode(
+            client,
+            "SUP-00101",
+            -qty675,
+            "Used",
+            req.user.user_id,
+            "Phase 2 Final QC battery 675 provided",
+            { patient_id: mappedData.patient_id, phase_id: 2, related_event_type: "FINAL_QC_BATTERY" }
+          )
+        }
+      } catch (invErr) {
+        console.warn("Phase2 QC inventory usage failed:", invErr.message)
+      }
 
       await client.query("COMMIT")
 
@@ -922,50 +961,70 @@ class Phase2Controller {
 
   static async getPhase2Data(req, res) {
     try {
-      const { patientId } = req.params
+      const { patientId, regId } = req.params;
+      const baseParams = [Number(patientId)];
+      let specificRegId = regId ? Number(regId) : null;
+
+      if (!specificRegId) {
+        const r = await db.query(
+          `SELECT phase2_reg_id FROM phase2_registration_section
+           WHERE patient_id = $1 ORDER BY registration_date DESC, created_at DESC LIMIT 1`,
+          baseParams
+        );
+        specificRegId = r.rows[0]?.phase2_reg_id || null;
+      }
+
+      const regFilter = specificRegId ? "AND phase2_reg_id = $2" : "";
+      const params = specificRegId ? [Number(patientId), specificRegId] : [Number(patientId)];
 
       const queries = {
         registration: `
-          SELECT * FROM phase2_registration_section 
-          WHERE patient_id = $1 ORDER BY created_at DESC LIMIT 1
+          SELECT * FROM phase2_registration_section
+          WHERE patient_id = $1 ${specificRegId ? "AND phase2_reg_id = $2" : ""}
+          ORDER BY created_at DESC LIMIT 1
         `,
         earScreening: `
-          SELECT * FROM ear_screening 
-          WHERE patient_id = $1 AND phase_id = 2 ORDER BY created_at DESC
+          SELECT * FROM ear_screening
+          WHERE patient_id = $1 AND phase_id = 2 ${regFilter}
+          ORDER BY created_at DESC
         `,
         hearingScreening: `
-          SELECT * FROM hearing_screening 
-          WHERE patient_id = $1 AND phase_id = 2 ORDER BY created_at DESC LIMIT 1
+          SELECT * FROM hearing_screening
+          WHERE patient_id = $1 AND phase_id = 2 ${regFilter}
+          ORDER BY created_at DESC LIMIT 1
         `,
         fittingTable: `
-          SELECT * FROM fitting_table 
-          WHERE patient_id = $1 ORDER BY created_at DESC LIMIT 1
+          SELECT * FROM fitting_table
+          WHERE patient_id = $1 ${regFilter}
+          ORDER BY created_at DESC LIMIT 1
         `,
         fitting: `
-          SELECT * FROM fitting 
-          WHERE patient_id = $1 ORDER BY created_at DESC LIMIT 1
+          SELECT * FROM fitting
+          WHERE patient_id = $1 ${regFilter}
+          ORDER BY created_at DESC LIMIT 1
         `,
         counseling: `
-          SELECT * FROM counseling 
-          WHERE patient_id = $1 ORDER BY created_at DESC LIMIT 1
+          SELECT * FROM counseling
+          WHERE patient_id = $1 ${regFilter}
+          ORDER BY created_at DESC LIMIT 1
         `,
         finalQC: `
-          SELECT * FROM final_qc_p2 
-          WHERE patient_id = $1 ORDER BY created_at DESC LIMIT 1
-        `,
+          SELECT * FROM final_qc_p2
+          WHERE patient_id = $1 ${regFilter}
+          ORDER BY created_at DESC LIMIT 1
+        `
+      };
+
+      const results = {};
+      for (const [k, q] of Object.entries(queries)) {
+        const r = await db.query(q, params);
+        results[k] = k === "earScreening" ? r.rows : r.rows[0] || null;
       }
 
-      const results = {}
-
-      for (const [key, query] of Object.entries(queries)) {
-        const result = await db.query(query, [Number.parseInt(patientId)])
-        results[key] = key === "earScreening" ? result.rows : result.rows[0] || null
-      }
-
-      return ResponseHandler.success(res, results, "Phase 2 data retrieved successfully")
-    } catch (error) {
-      console.error("Get Phase 2 data error:", error)
-      return ResponseHandler.error(res, "Failed to retrieve Phase 2 data")
+      return ResponseHandler.success(res, { phase2_reg_id: specificRegId, ...results }, "Phase 2 data retrieved");
+    } catch (e) {
+      console.error("getPhase2Data error:", e);
+      return ResponseHandler.error(res, "Failed to retrieve Phase 2 data");
     }
   }
 
@@ -1040,66 +1099,148 @@ class Phase2Controller {
 
   static async updateEarScreening(req, res) {
     const client = await db.getClient()
+    // helper (duplicate of create logic)
+    const mapEarConditionsToIntegerLocal = (left, right) => {
+      const isLeft = !!left
+      const isRight = !!right
+      if (isLeft && isRight) return 3
+      if (isLeft) return 1
+      if (isRight) return 2
+      return 0
+    }
 
     try {
       await client.query("BEGIN")
 
       const { screeningId } = req.params
-      const screeningData = req.body
+      const screeningData = req.body || {}
 
-      // Get current data for audit log
-      const currentScreeningResult = await client.query("SELECT * FROM ear_screening WHERE ear_screening_id = $1", [
-        Number.parseInt(screeningId),
-      ])
+      const currentScreeningResult = await client.query(
+        "SELECT * FROM ear_screening WHERE ear_screening_id = $1",
+        [Number.parseInt(screeningId)]
+      )
 
       if (currentScreeningResult.rows.length === 0) {
         await client.query("ROLLBACK")
         return ResponseHandler.notFound(res, "Ear screening not found")
       }
 
-      const currentScreening = currentScreeningResult.rows[0]
+      // Normalize aliases to single canonical keys and convert booleans -> integer coded fields
+      const earsClearRaw =
+        screeningData.ears_clear ??
+        screeningData.ears_clear_for_fitting ??
+        screeningData.ears_clear_for_impressions
 
-      // Build update query dynamically
-      const columns = Object.keys(screeningData)
-      if (columns.length === 0) {
-        await client.query("ROLLBACK")
-        return ResponseHandler.error(res, "No data provided for update", 400)
+      const earsClear = String(earsClearRaw).toLowerCase() === "yes"
+
+      const medicationGiven = []
+      if (screeningData.medication_antibiotic) medicationGiven.push("Antibiotic")
+      if (screeningData.medication_analgesic) medicationGiven.push("Analgesic")
+      if (screeningData.medication_antiseptic) medicationGiven.push("Antiseptic")
+      if (screeningData.medication_antifungal) medicationGiven.push("Antifungal")
+
+      const mappedUpdate = {
+        // only include if supplied
+        patient_id: screeningData.patient_id !== undefined ? Number(screeningData.patient_id) : undefined,
+        phase2_reg_id: screeningData.phase2_reg_id !== undefined ? Number(screeningData.phase2_reg_id) : undefined,
+        screening_name: "Fitting",
+        ears_clear: earsClear ? "Yes" : "No",
+        otc_wax: earsClear
+          ? null
+          : mapEarConditionsToIntegerLocal(screeningData.left_wax, screeningData.right_wax),
+        otc_infection: earsClear
+          ? null
+          : mapEarConditionsToIntegerLocal(screeningData.left_infection, screeningData.right_infection),
+        otc_perforation: earsClear
+          ? null
+          : mapEarConditionsToIntegerLocal(screeningData.left_perforation, screeningData.right_perforation),
+        otc_tinnitus: earsClear
+          ? null
+          : mapEarConditionsToIntegerLocal(screeningData.left_tinnitus, screeningData.right_tinnitus),
+        otc_atresia: earsClear
+          ? null
+          : mapEarConditionsToIntegerLocal(screeningData.left_atresia, screeningData.right_atresia),
+        otc_implant: earsClear
+          ? null
+          : mapEarConditionsToIntegerLocal(screeningData.left_implant, screeningData.right_implant),
+        otc_other: earsClear ? null : mapEarConditionsToIntegerLocal(screeningData.left_other, screeningData.right_other),
+        medical_recommendation: earsClear
+          ? null
+          : screeningData.medical_recommendation
+            ? String(screeningData.medical_recommendation).trim()
+            : null,
+        medication_given: earsClear ? null : (medicationGiven.length ? medicationGiven : null),
+        left_ear_clear_for_fitting:
+          screeningData.left_ear_clear_for_fitting ??
+          screeningData.left_ear_clear_for_assessment ??
+          null,
+        right_ear_clear_for_fitting:
+          screeningData.right_ear_clear_for_fitting ??
+          screeningData.right_ear_clear_for_assessment ??
+          null,
+        comments: earsClear
+          ? null
+          : screeningData.comments
+            ? String(screeningData.comments).trim()
+            : null,
       }
 
-      const setClause = columns.map((col, index) => `${col} = $${index + 1}`).join(", ")
-      const values = Object.values(screeningData)
+      // Remove undefined
+      Object.keys(mappedUpdate).forEach(k => {
+        if (mappedUpdate[k] === undefined) delete mappedUpdate[k]
+      })
+
+      // Filter to existing columns
+      const colsRes = await client.query(`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='ear_screening'
+      `)
+      const tableCols = new Set(colsRes.rows.map(r => r.column_name))
+      const finalUpdate = {}
+      for (const [k, v] of Object.entries(mappedUpdate)) {
+        if (!tableCols.has(k)) continue
+        // skip null medication_given if column is array and you want to clear? keep as null
+        finalUpdate[k] = v
+      }
+
+      const columns = Object.keys(finalUpdate)
+      if (columns.length === 0) {
+        await client.query("ROLLBACK")
+        return ResponseHandler.error(res, "No valid fields provided for update", 400)
+      }
+
+      const setClause = columns.map((c, i) => `${c} = $${i + 1}`).join(", ")
+      const values = Object.values(finalUpdate)
       values.push(Number.parseInt(screeningId))
 
       const query = `
-        UPDATE ear_screening 
+        UPDATE ear_screening
         SET ${setClause}, updated_at = CURRENT_TIMESTAMP
         WHERE ear_screening_id = $${values.length}
         RETURNING *
       `
-
       const result = await client.query(query, values)
-      const updatedScreening = result.rows[0]
+      const updated = result.rows[0]
 
-      // Log update
       await client.query(
-        "INSERT INTO audit_logs (table_name, record_id, action_type, old_data, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO audit_logs (table_name, record_id, action_type, old_data, new_data, changed_by_user_id) VALUES ($1,$2,$3,$4,$5,$6)",
         [
           "ear_screening",
           screeningId,
           "UPDATE",
-          JSON.stringify(currentScreening),
-          JSON.stringify(updatedScreening),
+          JSON.stringify(currentScreeningResult.rows[0]),
+          JSON.stringify(updated),
           req.user?.user_id || null,
-        ],
+        ]
       )
 
       await client.query("COMMIT")
-
-      return ResponseHandler.success(res, updatedScreening, "Ear screening updated successfully")
+      return ResponseHandler.success(res, updated, "Ear screening updated successfully")
     } catch (error) {
       await client.query("ROLLBACK")
       console.error("Update ear screening error:", error)
-      return ResponseHandler.error(res, "Failed to update ear screening")
+      return ResponseHandler.error(res, "Failed to update ear screening: " + error.message)
     } finally {
       client.release()
     }
@@ -1249,59 +1390,98 @@ class Phase2Controller {
       const { fittingId } = req.params
       const fittingData = req.body
 
-      // Get current data for audit log
       const currentFittingResult = await client.query("SELECT * FROM fitting WHERE fitting_id = $1", [
         Number.parseInt(fittingId),
       ])
-
       if (currentFittingResult.rows.length === 0) {
         await client.query("ROLLBACK")
         return ResponseHandler.notFound(res, "Fitting not found")
       }
 
-      const currentFitting = currentFittingResult.rows[0]
+      // Build mapped update (booleans -> integer-encoded pairs)
+      const mapPair = (l, r) => mapEarConditionsToInteger(l, r)
 
-      // Build update query dynamically
-      const columns = Object.keys(fittingData)
-      if (columns.length === 0) {
-        await client.query("ROLLBACK")
-        return ResponseHandler.error(res, "No data provided for update", 400)
+      const mappedUpdate = {}
+      // allow optional patient_id/phase2_reg_id/fitter_id update
+      if (fittingData.patient_id !== undefined) mappedUpdate.patient_id = Number(fittingData.patient_id)
+      if (fittingData.phase2_reg_id !== undefined) mappedUpdate.phase2_reg_id = Number(fittingData.phase2_reg_id) || null
+      if (fittingData.fitter_id !== undefined) mappedUpdate.fitter_id = Number(fittingData.fitter_id) || null
+
+      // main fields
+      if (fittingData.number_of_hearing_aid !== undefined)
+        mappedUpdate.number_of_hearing_aid = Number(fittingData.number_of_hearing_aid) || 0
+      if (fittingData.special_device !== undefined)
+        mappedUpdate.special_device = fittingData.special_device ? String(fittingData.special_device).trim() : null
+
+      // ear reasons (only include when any side provided)
+      const addPairIfPresent = (key, l, r) => {
+        if (l !== undefined || r !== undefined) {
+          mappedUpdate[key] = mapPair(l, r)
+        }
+      }
+      addPairIfPresent("normal_hearing", fittingData.normal_hearing_left, fittingData.normal_hearing_right)
+      addPairIfPresent("distortion", fittingData.distortion_left, fittingData.distortion_right)
+      addPairIfPresent("implant", fittingData.implant_left, fittingData.implant_right)
+      addPairIfPresent("recruitment", fittingData.recruitment_left, fittingData.recruitment_right)
+      addPairIfPresent("no_response", fittingData.no_response_left, fittingData.no_response_right)
+      addPairIfPresent("other", fittingData.other_left, fittingData.other_right)
+
+      if (fittingData.comment !== undefined)
+        mappedUpdate.comment = fittingData.comment != null ? String(fittingData.comment).trim() : null
+      if (fittingData.clear_for_counseling !== undefined)
+        mappedUpdate.clear_for_counseling = Boolean(fittingData.clear_for_counseling)
+
+      // Keep only columns that exist in "fitting" table
+      const colsRes = await client.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' 
+          AND table_name = 'fitting'
+      `)
+      const tableCols = new Set(colsRes.rows.map(r => r.column_name))
+      const finalUpdate = {}
+      for (const [k, v] of Object.entries(mappedUpdate)) {
+        if (!tableCols.has(k)) continue
+        finalUpdate[k] = v
       }
 
-      const setClause = columns.map((col, index) => `${col} = $${index + 1}`).join(", ")
-      const values = Object.values(fittingData)
+      const columns = Object.keys(finalUpdate)
+      if (columns.length === 0) {
+        await client.query("ROLLBACK")
+        return ResponseHandler.error(res, "No valid fields provided for update", 400)
+      }
+
+      const setClause = columns.map((col, i) => `${col} = $${i + 1}`).join(", ")
+      const values = Object.values(finalUpdate)
       values.push(Number.parseInt(fittingId))
 
       const query = `
-        UPDATE fitting 
+        UPDATE fitting
         SET ${setClause}, updated_at = CURRENT_TIMESTAMP
         WHERE fitting_id = $${values.length}
         RETURNING *
       `
-
       const result = await client.query(query, values)
-      const updatedFitting = result.rows[0]
+      const updated = result.rows[0]
 
-      // Log update
       await client.query(
-        "INSERT INTO audit_logs (table_name, record_id, action_type, old_data, new_data, changed_by_user_id) VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO audit_logs (table_name, record_id, action_type, old_data, new_data, changed_by_user_id) VALUES ($1,$2,$3,$4,$5,$6)",
         [
           "fitting",
           fittingId,
           "UPDATE",
-          JSON.stringify(currentFitting),
-          JSON.stringify(updatedFitting),
+          JSON.stringify(currentFittingResult.rows[0]),
+          JSON.stringify(updated),
           req.user?.user_id || null,
         ],
       )
 
       await client.query("COMMIT")
-
-      return ResponseHandler.success(res, updatedFitting, "Fitting updated successfully")
+      return ResponseHandler.success(res, updated, "Fitting updated successfully")
     } catch (error) {
       await client.query("ROLLBACK")
       console.error("Update fitting error:", error)
-      return ResponseHandler.error(res, "Failed to update fitting")
+      return ResponseHandler.error(res, "Failed to update fitting: " + error.message)
     } finally {
       client.release()
     }

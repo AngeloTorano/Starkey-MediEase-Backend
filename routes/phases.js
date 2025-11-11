@@ -1,7 +1,8 @@
 const express = require("express")
-const { authenticateToken, requireRole } = require("../middleware/auth")
+const { authenticateToken, requireRole, requireLocationAccess } = require("../middleware/auth")
 const db = require("../config/database")
 const ResponseHandler = require("../utils/responseHandler")
+const CombinedPhaseController = require("../controllers/combinedPhaseController")
 
 const router = express.Router()
 
@@ -90,6 +91,14 @@ router.put(
       client.release()
     }
   },
+)
+
+// Combined phases route
+router.use(requireLocationAccess)
+router.get(
+  "/combined/:patientId",
+  requireRole(["Admin", "City Coordinator", "Country Coordinator"]),
+  CombinedPhaseController.getPhase1And2,
 )
 
 module.exports = router

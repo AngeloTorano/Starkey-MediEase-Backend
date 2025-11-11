@@ -22,10 +22,10 @@ CREATE TABLE roles (
 
 -- Insert default roles
 INSERT INTO roles (role_name) VALUES 
-('admin'),
-('city_coordinator'),
-('country_coordinator'),
-('supply_manager');
+('Admin'),
+('City Coordinator'),
+('Country Coordinator'),
+('Supply Manager');
 
 -- users Table: Stores user authentication and basic information
 CREATE TABLE users (
@@ -40,7 +40,7 @@ CREATE TABLE users (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
-INSERT INTO users (username, password_hash, first_name, last_name, email)
+INSERT INTO users (username, password_hash, first_name, last_name, email,)
 VALUES ('admin', '$2a$12$Gsxa7pi10GnZPC9Q/qWK0u8gPIBvcTajGRbptjENNDtayMIHuoSEq', 'admin', 'admin', 'admin@example.com');
 
 -- user_roles Table: Links users to their assigned roles
@@ -390,9 +390,6 @@ INSERT INTO supply_categories (category_name) VALUES
 ('Hearing Aids'),
 ('Batteries'),
 ('Earmolds'),
-('Medical Supplies'),
-('Testing Equipment'),
-('Cleaning Supplies');
 
 CREATE TABLE supplies (
     supply_id SERIAL PRIMARY KEY,

@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const db = require("../config/database")
 const ResponseHandler = require("../utils/responseHandler")
-const InventoryService = require("../utils/inventoryService") // <-- Import the new service
+const InventoryService = require("../services/inventoryService") // <-- Import the new service
 
 class SupplyController {
   
@@ -12,12 +12,27 @@ class SupplyController {
       await client.query("BEGIN")
 
       const supplyData = req.body
-      
-      // 👇 --- ADDED: Make sure item_code is included if provided --- 👇
+
+      // AUTO-GENERATE item_code if missing (prefix SUP- + zero padded sequence)
       if (!supplyData.item_code) {
-          supplyData.item_code = null; // Or generate one
+        const seqRes = await client.query(`
+          SELECT COALESCE(MAX(CAST(SUBSTRING(item_code FROM 5) AS INTEGER)),0)+1 AS next_id
+          FROM supplies
+          WHERE item_code ~ '^SUP-[0-9]+$'
+        `)
+        const nextId = seqRes.rows[0].next_id
+        supplyData.item_code = `SUP-${String(nextId).padStart(5,'0')}`
       }
-      // 👆 --- END OF ADDITION --- 👆
+
+      // --- NEW CODE: FILTER supplyData TO ALLOWED FIELDS ---
+      const allowed = [
+        "item_code","item_name","description","current_stock_level",
+        "reorder_level","unit_of_measure","category_id","status"
+      ]
+      Object.keys(supplyData).forEach(k => {
+        if (!allowed.includes(k) || supplyData[k] === undefined || supplyData[k] === "") delete supplyData[k]
+      })
+      // --- END OF NEW CODE ---
 
       const columns = Object.keys(supplyData).join(", ")
       const placeholders = Object.keys(supplyData)
@@ -122,49 +137,29 @@ class SupplyController {
     const client = await db.getClient()
     try {
       await client.query("BEGIN")
+      const supplyId = Number(req.params.supplyId)
+      const { quantity, transaction_type, notes, patient_id, phase_id, related_event_type } = req.body
 
-      const { supplyId } = req.params
-      const { quantity, transaction_type, notes } = req.body
-      const userId = req.user.user_id
-
-      if (!quantity || !transaction_type) {
-         return ResponseHandler.error(res, "Missing quantity or transaction_type", 400)
-      }
-
-      // 1. Get the item_code from the supply_id
-      const supply = await client.query("SELECT item_code FROM supplies WHERE supply_id = $1", [supplyId])
-      if (supply.rows.length === 0) {
+      if (!supplyId || Number.isNaN(Number(quantity)) || !transaction_type) {
         await client.query("ROLLBACK")
-        return ResponseHandler.notFound(res, "Supply not found")
-      }
-      const itemCode = supply.rows[0].item_code
-
-      if (!itemCode) {
-         await client.query("ROLLBACK")
-         return ResponseHandler.error(res, "Cannot update stock for item without an Item Code.", 400)
+        return ResponseHandler.error(res, "supplyId, quantity, and transaction_type are required", 400)
       }
 
-      // 2. Use the new service to perform the update
-      const result = await InventoryService.updateStockByCode(
+      const result = await InventoryService.updateStockById(
         client,
-        itemCode,
+        supplyId,
         Number(quantity),
-        transaction_type, // e.g., "Received" from your React restock
-        userId,
+        transaction_type,
+        req.user?.user_id,
         notes,
+        { patient_id, phase_id, related_event_type }
       )
 
       await client.query("COMMIT")
-      return ResponseHandler.success(res, { new_stock_level: result.new_stock_level }, "Stock updated successfully")
-
-    } catch (error) {
+      return ResponseHandler.success(res, result, "Stock updated")
+    } catch (e) {
       await client.query("ROLLBACK")
-      console.error("Update stock error:", error)
-      // Pass service errors (like "Insufficient stock") to the client
-      if (error.message.includes("Insufficient stock") || error.message.includes("not found")) {
-        return ResponseHandler.error(res, error.message, 400)
-      }
-      return ResponseHandler.error(res, "Failed to update stock")
+      return ResponseHandler.error(res, e.message || "Update stock failed")
     } finally {
       client.release()
     }
@@ -175,34 +170,20 @@ class SupplyController {
   // --- getSupplyTransactions remains the same as your original ---
   static async getSupplyTransactions(req, res) {
     try {
-      const { supplyId } = req.params
-      const { page = 1, limit = 50 } = req.query // Increased default limit
-      const offset = (page - 1) * limit
-
-      const query = `
-        SELECT st.*, stt.type_name, u.username, s.item_name
-        FROM supply_transactions st
-        LEFT JOIN supply_transaction_types stt ON st.transaction_type_id = stt.transaction_type_id
-        LEFT JOIN users u ON st.recorded_by_user_id = u.user_id
-        LEFT JOIN supplies s ON st.supply_id = s.supply_id
-        WHERE st.supply_id = $1
-        ORDER BY st.transaction_date DESC
-        LIMIT $2 OFFSET $3
-      `
-      const result = await db.query(query, [supplyId, limit, offset])
-
-      const totalResult = await db.query("SELECT COUNT(*) FROM supply_transactions WHERE supply_id = $1", [supplyId]);
-      const totalCount = totalResult.rows[0].count;
-
-      return ResponseHandler.success(res, {
-        transactions: result.rows,
-        totalCount: totalCount,
-        totalPages: Math.ceil(totalCount / limit),
-        currentPage: Number(page)
-      }, "Supply transactions retrieved successfully")
-    } catch (error) {
-      console.error("Get supply transactions error:", error)
-      return ResponseHandler.error(res, "Failed to retrieve supply transactions")
+      const supplyId = Number(req.params.supplyId)
+      const rows = await db.query(
+        `SELECT st.*, s.item_name, s.item_code, u.username,
+                st.patient_id, st.phase_id, st.related_event_type
+         FROM supply_transactions st
+         JOIN supplies s ON st.supply_id = s.supply_id
+         LEFT JOIN users u ON st.recorded_by_user_id = u.user_id
+         WHERE st.supply_id=$1
+         ORDER BY st.transaction_date DESC`,
+        [supplyId]
+      )
+      return ResponseHandler.success(res, rows.rows, "Transactions retrieved")
+    } catch (e) {
+      return ResponseHandler.error(res, "Failed to get transactions")
     }
   }
 
@@ -382,6 +363,69 @@ class SupplyController {
       await client.query("ROLLBACK")
       console.error("Delete supply error:", error)
       return ResponseHandler.error(res, "Failed to delete supply")
+    } finally {
+      client.release()
+    }
+  }
+
+  // --- NEW METHODS FOR RECORDING USAGE ---
+  static async recordUsage(req, res) {
+    const client = await db.getClient()
+    try {
+      await client.query("BEGIN")
+      const { item_code, quantity, patient_id, phase_id, related_event_type, notes } = req.body
+      if (!item_code || !quantity) {
+        await client.query("ROLLBACK")
+        return ResponseHandler.error(res, "item_code and quantity required", 400)
+      }
+      // Negative quantity for usage
+      const result = await InventoryService.updateStockByCode(
+        client,
+        item_code,
+        -Math.abs(Number(quantity)),
+        "Used",
+        req.user.user_id,
+        notes || null,
+        { patient_id: patient_id || null, phase_id: phase_id || null, related_event_type: related_event_type || null }
+      )
+      await client.query("COMMIT")
+      return ResponseHandler.success(res, { item_code, new_stock_level: result.new_stock_level }, "Usage recorded")
+    } catch (e) {
+      await client.query("ROLLBACK")
+      return ResponseHandler.error(res, e.message || "Failed to record usage")
+    } finally {
+      client.release()
+    }
+  }
+
+  static async recordBulkUsage(req, res) {
+    const client = await db.getClient()
+    try {
+      await client.query("BEGIN")
+      const { usages } = req.body
+      if (!Array.isArray(usages) || usages.length === 0)
+        return ResponseHandler.error(res, "usages array required", 400)
+
+      const results = []
+      for (const u of usages) {
+        const { item_code, quantity, patient_id, phase_id, related_event_type, notes } = u
+        if (!item_code || !quantity) continue
+        const r = await InventoryService.updateStockByCode(
+          client,
+          item_code,
+          -Math.abs(Number(quantity)),
+          "Used",
+          req.user.user_id,
+          notes || null,
+          { patient_id: patient_id || null, phase_id: phase_id || null, related_event_type: related_event_type || null }
+        )
+        results.push({ item_code, new_stock_level: r.new_stock_level })
+      }
+      await client.query("COMMIT")
+      return ResponseHandler.success(res, results, "Bulk usage recorded")
+    } catch (e) {
+      await client.query("ROLLBACK")
+      return ResponseHandler.error(res, e.message || "Bulk usage failed")
     } finally {
       client.release()
     }

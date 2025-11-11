@@ -20,6 +20,9 @@ const scheduleRoutes = require("./routes/schedule");
 const smsRoutes = require("./routes/smsRoutes");
 const dashRoutes =require("./routes/dash");
 const patientReportRoutes = require("./routes/reportsRoutes");
+const documentRoutes = require("./routes/documents");
+const archivalRoutes = require("./routes/archival");
+const importPhase1 = require('./routes/importPhase1');
 
 const app = express();
 
@@ -54,7 +57,7 @@ app.options("*", cors());
 // Rate limiting
 const limiter = rateLimit({
   windowMs: Number.parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
-  max: Number.parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
+  max: Number.parseInt(process.env.RATE_LIMIT_MAX_REQUESTS),
   message: {
     error: "Too many requests from this IP, please try again later.",
   },
@@ -103,7 +106,9 @@ app.use("/api/schedules", scheduleRoutes);
 app.use("/api/sms", smsRoutes);
 app.use("/api/dash", dashRoutes);
 app.use("/api/reports", patientReportRoutes);
-
+app.use("/api/archival", archivalRoutes);
+app.use("/api/documents", documentRoutes);
+app.use('/api', importPhase1);
 // 404 handler
 app.use("*", (req, res) => {
   res.status(404).json({

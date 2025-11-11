@@ -26,9 +26,11 @@ router.get(
 // Ear Screening
 router.post(
   "/ear-screening",
+  authenticateToken,
+  requireLocationAccess,
   requireRole(["Admin", "City Coordinator", "Country Coordinator"]),
-  validateRequest(schemas.earScreening),
-  Phase3Controller.createEarScreening,
+  validateRequest(schemas.phase3EarScreening),
+  Phase3Controller.createEarScreening
 )
 
 router.get(
@@ -67,9 +69,23 @@ router.get(
 
 // Get complete Phase 3 data for a patient
 router.get(
-  "/patient/:patientId",
+  "/patient/:patientId/registration/:regId",
   requireRole(["Admin", "City Coordinator", "Country Coordinator"]),
   Phase3Controller.getPhase3Data,
+)
+
+// NEW: Resume/incomplete Phase 3 summary (optional regId)
+router.get(
+  "/resume/:patientId/:regId?",
+  requireRole(["Admin", "City Coordinator", "Country Coordinator"]),
+  Phase3Controller.getPhase3ResumeData,
+)
+
+// Get Phase 3 sections for a patient
+router.get(
+  "/sections/:patientId/:regId",
+  requireRole(["Admin", "City Coordinator", "Country Coordinator"]),
+  Phase3Controller.getPhase3Sections,
 )
 
 // Update Phase 3 records
